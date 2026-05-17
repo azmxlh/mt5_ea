@@ -1,8 +1,8 @@
 //+------------------------------------------------------------------+
-//| SwapTrendNanpinEA.mq5 - スワップ＋トレンド＋ナンピン EA            |
-//| パターンA〜D 複数同時稼働対応版（通常口座版）                       |
+//| SwapTrendNanpinEA_Micro.mq5 - スワップ＋トレンド＋ナンピン EA      |
+//| パターンA〜D 複数同時稼働対応版（マイクロ口座版）                   |
 //+------------------------------------------------------------------+
-#property copyright "Swap Trend Nanpin EA"
+#property copyright "Swap Trend Nanpin EA (Micro)"
 #property version   "3.00"
 #property strict
 #include <Trade/Trade.mqh>
@@ -11,12 +11,12 @@
 #define PATTERN_COUNT  4
 #define MAX_PAIRS      (PATTERN_COUNT * PAIR_COUNT)  // 最大16ペア
 
-// パターン別シンボル定義（通常口座）
+// パターン別シンボル定義
 const string g_patternSymbols[PATTERN_COUNT][PAIR_COUNT] = {
-   {"USDJPY", "GBPJPY", "AUDJPY", "EURAUD"},  // A: 円売り+ユーロ売り
-   {"NZDJPY", "CADJPY", "CHFJPY", "GBPAUD"},  // B: 円売り別ペア+ポンド買い
-   {"EURUSD", "GBPUSD", "AUDUSD", "USDCHF"},  // C: ドル買い中心
-   {"EURJPY", "USDJPY", "GBPCHF", "AUDNZD"}   // D: 高金利通貨買い
+   {"USDJPYmicro", "GBPJPYmicro", "AUDJPYmicro", "EURAUDmicro"},  // A: 円売り+ユーロ売り
+   {"NZDJPYmicro", "CADJPYmicro", "CHFJPYmicro", "GBPAUDmicro"},  // B: 円売り別ペア+ポンド買い
+   {"EURUSDmicro", "GBPUSDmicro", "AUDUSDmicro", "USDCHFmicro"},  // C: ドル買い中心
+   {"EURJPYmicro", "USDJPYmicro", "GBPCHFmicro", "AUDNZDmicro"}   // D: 高金利通貨買い
 };
 
 // パターン別スワップ方向
@@ -121,6 +121,8 @@ int OnInit()
    { Print("[SwapNanpin ERROR] Max_Nanpin は0以上が必要 (0=無制限)"); return(INIT_PARAMETERS_INCORRECT); }
    if(MA_Period <= 0)
    { Print("[SwapNanpin ERROR] MA_Period は正の値が必要"); return(INIT_PARAMETERS_INCORRECT); }
+
+   // 少なくとも1つのパターンが有効か確認（windingDownのみでも起動可能にするため後でチェック）
 
    // ペア設定初期化（有効パターンのペアを順に登録）
    g_activePairCount = 0;

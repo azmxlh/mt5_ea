@@ -1,6 +1,6 @@
 //+------------------------------------------------------------------+
-//|                                              TrendGrid.mq5      |
-//|        トレンドフォロー・グリッドトレードEA（通常口座版）       |
+//|                                         TrendGrid_Micro.mq5     |
+//|        トレンドフォロー・グリッドトレードEA（マイクロ口座版）   |
 //|                                                                  |
 //| 設計方針:                                                         |
 //|   - 200期間MAでトレンド方向を判定                                  |
@@ -9,7 +9,7 @@
 //|   - 下降トレンド → Sell Limit（戻り売り）                          |
 //|   - トレンド転換時は逆方向のPending Orderを削除                    |
 //+------------------------------------------------------------------+
-#property copyright "Trend Grid EA"
+#property copyright "Trend Grid EA (Micro)"
 #property link      ""
 #property version   "3.00"
 #property strict
@@ -22,7 +22,7 @@
 #define PAIR_COUNT       3
 #define THROTTLE_SEC     30
 
-const string g_symbols[PAIR_COUNT] = {"AUDNZD", "EURGBP", "USDCAD"};
+const string g_symbols[PAIR_COUNT] = {"AUDNZDmicro", "EURGBPmicro", "USDCADmicro"};
 
 enum ENUM_TREND_DIR
 {

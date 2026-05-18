@@ -36,7 +36,7 @@ const string g_patternNames[PATTERN_COUNT] = {"A", "B", "C", "D"};
 
 // --- 基本設定 ---
 input int    Magic_Number       = 847291;
-input double Lots               = 0.1;
+input double Lots               = 0.01;
 input bool   SinglePairMode     = false;
 
 // --- パターン有効/無効（複数同時ON可能） ---
@@ -563,8 +563,8 @@ void CheckNanpinWithLot(int idx, double baseLot)
    }
    if(!nanpinTrigger) return;
 
-   // 前のロットベースでナンピンロット計算
-   double lots = baseLot * MathPow(Lot_Multiplier, g_pairs[idx].nanpinCount);
+   // 前のロットベースでナンピンロット計算（+1で初回ナンピンから倍率適用）
+   double lots = baseLot * MathPow(Lot_Multiplier, g_pairs[idx].nanpinCount + 1);
    g_trade.SetExpertMagicNumber(g_pairs[idx].magicNumber);
 
    bool result = false;
@@ -591,7 +591,8 @@ void CheckNanpinWithLot(int idx, double baseLot)
 //--- CalcNanpinLots ---
 double CalcNanpinLots(int count)
 {
-   return Lots * MathPow(Lot_Multiplier, count);
+   // count=0(ナンピン1回目)から倍率を適用する（+1で初回から倍）
+   return Lots * MathPow(Lot_Multiplier, count + 1);
 }
 
 //--- CalcAveragePrice ---

@@ -238,7 +238,7 @@ int OnInit()
    }
    else
    {
-      // シンボル存在チェック
+      // シンボル存在チェック＆気配値表示に自動追加
       for(int i = 0; i < g_activePairCount; i++)
       {
          if(!g_pairs[i].enabled) continue;
@@ -247,6 +247,11 @@ int OnInit()
             PrintFormat("[TrendNanpin ERROR] シンボル利用不可: %s (パターン%s)",
                        g_pairs[i].symbol, g_patternNames[g_pairs[i].patternIndex]);
             return(INIT_FAILED);
+         }
+         // 気配値表示（Market Watch）に追加
+         if(!SymbolSelect(g_pairs[i].symbol, true))
+         {
+            PrintFormat("[TrendNanpin WARN][%s] 気配値への追加に失敗", g_pairs[i].symbol);
          }
       }
       PrintFormat("[TrendNanpin INFO] マルチペアモード稼働: %dペア", g_activePairCount);

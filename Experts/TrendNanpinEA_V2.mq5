@@ -84,6 +84,12 @@ input ENUM_TIMEFRAMES ATR_Timeframe = PERIOD_D1; // ATR計算時間軸
 // --- 決済設定 ---
 input int    Profit_Pips         = 30;
 
+// --- 適応型利確設定（ATRベース） ---
+input bool   AdaptiveTP_Enabled    = true;   // ATR適応利確 (true=有効, false=Profit_Pips固定)
+input double AdaptiveTP_Multiplier = 1.5;    // ATR × 倍率 = 利確幅
+input int    AdaptiveTP_MinPips    = 10;     // 最低利確pips（下限）
+input int    AdaptiveTP_MaxPips    = 100;    // 最大利確pips（上限）
+
 // --- 日次決済設定 ---
 input bool   DailyClose_Enabled  = true;   // 日次利確決済 (true=有効)
 input int    DailyClose_Hour     = 23;     // 決済判定時刻（時）サーバー時間
@@ -318,6 +324,12 @@ int OnInit()
    { Print("[TrendNanpinV2 ERROR] BalancePerLot は正の値が必要"); return(INIT_PARAMETERS_INCORRECT); }
    if(CompoundMode && BaseLots <= 0)
    { Print("[TrendNanpinV2 ERROR] BaseLots は正の値が必要"); return(INIT_PARAMETERS_INCORRECT); }
+   if(AdaptiveTP_Enabled && AdaptiveTP_Multiplier <= 0)
+   { Print("[TrendNanpinV2 ERROR] AdaptiveTP_Multiplier は正の値が必要"); return(INIT_PARAMETERS_INCORRECT); }
+   if(AdaptiveTP_Enabled && AdaptiveTP_MinPips <= 0)
+   { Print("[TrendNanpinV2 ERROR] AdaptiveTP_MinPips は正の値が必要"); return(INIT_PARAMETERS_INCORRECT); }
+   if(AdaptiveTP_Enabled && AdaptiveTP_MaxPips < AdaptiveTP_MinPips)
+   { Print("[TrendNanpinV2 ERROR] AdaptiveTP_MaxPips >= AdaptiveTP_MinPips が必要"); return(INIT_PARAMETERS_INCORRECT); }
 
    g_activePairCount = 0;
 
@@ -467,9 +479,9 @@ int OnInit()
          return(INIT_FAILED);
       }
 
-      // ATRハンドル作成
+      // ATRハンドル作成（適応ナンピン幅 or 適応利確で使用）
       g_pairs[i].atrHandle = INVALID_HANDLE;
-      if(AdaptiveNanpin_Enabled)
+      if(AdaptiveNanpin_Enabled || AdaptiveTP_Enabled)
       {
          g_pairs[i].atrHandle = iATR(g_pairs[i].symbol, ATR_Timeframe, ATR_Period);
          if(g_pairs[i].atrHandle == INVALID_HANDLE)
@@ -542,10 +554,12 @@ int OnInit()
          enabledPatterns += g_patternNames[pat];
       }
    }
-   PrintFormat("[TrendNanpinV2 INFO] 初期化完了: パターン=[%s], TrendMA=%d/%d(%s)確認%d本, EntryMA=%d(%s), Nanpin=%dpips, Profit=%dpips, 複利=%s",
+   PrintFormat("[TrendNanpinV2 INFO] 初期化完了: パターン=[%s], TrendMA=%d/%d(%s)確認%d本, EntryMA=%d(%s), Nanpin=%dpips, Profit=%s, 複利=%s",
               enabledPatterns, TrendMA_Short_Period, TrendMA_Long_Period,
               EnumToString(TrendMA_Timeframe), TrendConfirmBars,
-              MA_Period, EnumToString(MA_Timeframe), Nanpin_Pips, Profit_Pips,
+              MA_Period, EnumToString(MA_Timeframe), Nanpin_Pips,
+              AdaptiveTP_Enabled ? StringFormat("ATR×%.1f(%d-%dpips)", AdaptiveTP_Multiplier, AdaptiveTP_MinPips, AdaptiveTP_MaxPips)
+                                : StringFormat("%dpips固定", Profit_Pips),
               CompoundMode ? StringFormat("ON(%.0f円/%.2fLot)", BalancePerLot, BaseLots) : "OFF");
    return(INIT_SUCCEEDED);
 }
@@ -748,6 +762,29 @@ double GetAdaptiveNanpinPips(int idx)
       return atrPips;
 
    return Nanpin_Pips;
+}
+
+//--- GetAdaptiveProfitPips ---
+// ATRに基づく利確幅(pips)を返す。無効時はProfit_Pipsをそのまま返す
+double GetAdaptiveProfitPips(int idx)
+{
+   if(!AdaptiveTP_Enabled || g_pairs[idx].atrHandle == INVALID_HANDLE)
+      return Profit_Pips;
+
+   double atrBuffer[];
+   ArraySetAsSeries(atrBuffer, true);
+   if(CopyBuffer(g_pairs[idx].atrHandle, 0, 1, 1, atrBuffer) <= 0)
+      return Profit_Pips;
+
+   // ATRをpipsに変換し倍率を適用
+   double atrPips = atrBuffer[0] / g_pairs[idx].pip;
+   double tpPips = atrPips * AdaptiveTP_Multiplier;
+
+   // 上下限でクランプ
+   if(tpPips < AdaptiveTP_MinPips) tpPips = AdaptiveTP_MinPips;
+   if(tpPips > AdaptiveTP_MaxPips) tpPips = AdaptiveTP_MaxPips;
+
+   return tpPips;
 }
 
 //--- CheckNanpin ---
@@ -1105,6 +1142,7 @@ void CheckBatchClose(int idx)
    string symbol = g_pairs[idx].symbol;
    double pip = g_pairs[idx].pip;
    int magic = g_pairs[idx].magicNumber;
+   double profitPips = GetAdaptiveProfitPips(idx);
 
    // 現在方向のポジション利確チェック
    double avgPrice = CalcAveragePriceByDir(idx, g_pairs[idx].swapDirection);
@@ -1114,12 +1152,12 @@ void CheckBatchClose(int idx)
       if(g_pairs[idx].swapDirection == 1)
       {
          double currentBid = SymbolInfoDouble(symbol, SYMBOL_BID);
-         closeCondition = (currentBid >= avgPrice + Profit_Pips * pip);
+         closeCondition = (currentBid >= avgPrice + profitPips * pip);
       }
       else
       {
          double currentAsk = SymbolInfoDouble(symbol, SYMBOL_ASK);
-         closeCondition = (currentAsk <= avgPrice - Profit_Pips * pip);
+         closeCondition = (currentAsk <= avgPrice - profitPips * pip);
       }
       if(closeCondition)
          ClosePositionsByDir(idx, g_pairs[idx].swapDirection);
@@ -1135,12 +1173,12 @@ void CheckBatchClose(int idx)
          if(g_pairs[idx].oldDirection == 1)
          {
             double currentBid = SymbolInfoDouble(symbol, SYMBOL_BID);
-            oldCloseCondition = (currentBid >= oldAvgPrice + Profit_Pips * pip);
+            oldCloseCondition = (currentBid >= oldAvgPrice + profitPips * pip);
          }
          else
          {
             double currentAsk = SymbolInfoDouble(symbol, SYMBOL_ASK);
-            oldCloseCondition = (currentAsk <= oldAvgPrice - Profit_Pips * pip);
+            oldCloseCondition = (currentAsk <= oldAvgPrice - profitPips * pip);
          }
          if(oldCloseCondition)
          {

@@ -1,23 +1,23 @@
 //+------------------------------------------------------------------+
 //| TrendNanpinEA_V2.mq5 - トレンド＋ナンピン EA（複利対応+上位足判定版）|
-//| パターンA〜D 複数同時稼働対応版（通常口座版）                       |
+//| パターンA〜D 複数同時稼働対応版（通常/マイクロ統合版）              |
 //| トレンド判定: 短期MA/長期MAクロス + N本確認                         |
 //+------------------------------------------------------------------+
 #property copyright "Trend Nanpin EA V2"
-#property version   "4.20"
+#property version   "5.00"
 #property strict
 #include <Trade/Trade.mqh>
 
 // --- 許可口座リスト ---
-#define ALLOWED_ACCOUNT_COUNT 3
-const long g_allowedAccounts[ALLOWED_ACCOUNT_COUNT] = {75545335, 70643523, 75548484};
+#define ALLOWED_ACCOUNT_COUNT 4
+const long g_allowedAccounts[ALLOWED_ACCOUNT_COUNT] = {75545335, 70643523, 75548484, 370394526};
 
 #define PAIR_COUNT     4
 #define PATTERN_COUNT  4
 #define MAX_PAIRS      (PATTERN_COUNT * PAIR_COUNT)
 
-// パターン別シンボル定義（通常口座）
-const string g_patternSymbols[PATTERN_COUNT][PAIR_COUNT] = {
+// パターン別シンボル定義（通常口座用、Microモード時は"micro"サフィックスを自動付加）
+const string g_patternSymbolsBase[PATTERN_COUNT][PAIR_COUNT] = {
    {"USDJPY", "GBPJPY", "AUDJPY", "EURAUD"},
    {"NZDJPY", "CADJPY", "CHFJPY", "GBPAUD"},
    {"EURUSD", "GBPUSD", "AUDUSD", "USDCHF"},
@@ -33,6 +33,12 @@ const int g_patternSwapDir[PATTERN_COUNT][PAIR_COUNT] = {
 };
 
 const string g_patternNames[PATTERN_COUNT] = {"A", "B", "C", "D"};
+
+// パターン別シンボル（実行時にMicroMode判定で設定）
+string g_patternSymbols[PATTERN_COUNT][PAIR_COUNT];
+
+// --- 口座モード ---
+input bool   MicroMode          = false;   // マイクロ口座モード (true=シンボルに"micro"付加)
 
 // --- 基本設定 ---
 input int    Magic_Number       = 847291;
@@ -292,6 +298,18 @@ void CheckTrendReversal(int idx)
 //--- OnInit ---
 int OnInit()
 {
+   // シンボル配列を初期化（MicroMode時は"micro"サフィックス付加）
+   for(int pat = 0; pat < PATTERN_COUNT; pat++)
+   {
+      for(int p = 0; p < PAIR_COUNT; p++)
+      {
+         if(MicroMode)
+            g_patternSymbols[pat][p] = g_patternSymbolsBase[pat][p] + "micro";
+         else
+            g_patternSymbols[pat][p] = g_patternSymbolsBase[pat][p];
+      }
+   }
+
    long accountNumber = AccountInfoInteger(ACCOUNT_LOGIN);
    bool accountAllowed = false;
    for(int i = 0; i < ALLOWED_ACCOUNT_COUNT; i++)

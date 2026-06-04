@@ -16,7 +16,7 @@ input bool     CompoundMode      = true;        // 複利モード (true=有効)
 input double   BalancePerLot     = 100000;      // 1ロット単位あたりの必要残高 (円)
 input double   BaseLots          = 0.01;        // 複利計算の基準ロット
 input double   BaseLot           = 0.01;        // 固定ロット（複利OFF時）
-input bool     MicroMode         = true;
+input bool     MicroMode         = false;
 
 //--- ロットスケール設定（残高に応じてBalancePerLotに倍率適用）
 input bool     Decay_Enabled     = true;         // 複利逓減を有効化
@@ -32,8 +32,8 @@ input ENUM_TIMEFRAMES BB_TF      = PERIOD_M15;
 
 //--- RSI設定
 input int      RSI_Period        = 14;
-input int      RSI_OB           = 65;
-input int      RSI_OS           = 35;
+input int      RSI_OB           = 60;
+input int      RSI_OS           = 30;
 input ENUM_TIMEFRAMES RSI_TF     = PERIOD_M15;
 
 //--- ATR設定
@@ -41,8 +41,8 @@ input int      ATR_Period        = 14;
 input ENUM_TIMEFRAMES ATR_TF     = PERIOD_H1;
 
 //--- ナンピン設定
-input double   Nanpin_ATR_Multi  = 15.0;         // ナンピン間隔（ATR倍率）※広めに
-input double   Nanpin_LotMulti   = 15.0;         // ロット倍率
+input double   Nanpin_ATR_Multi  = 20.0;         // ナンピン間隔（ATR倍率）※広めに
+input double   Nanpin_LotMulti   = 20.0;         // ロット倍率
 input int      Nanpin_MaxCount   = 1;           // 最大ナンピン回数
 
 //--- 利確設定
@@ -69,6 +69,7 @@ int    pairCount;
 int    handleBB[];
 int    handleRSI[];
 int    handleATR[];
+bool   pairEnabled[];       // ペアが有効かどうか
 double initialBalance = 0;  // 初回残高記録用
 
 //+------------------------------------------------------------------+
@@ -90,22 +91,47 @@ int OnInit()
    ArrayResize(handleBB, pairCount);
    ArrayResize(handleRSI, pairCount);
    ArrayResize(handleATR, pairCount);
+   ArrayResize(pairEnabled, pairCount);
 
+   int enabledCount = 0;
    for(int i = 0; i < pairCount; i++) {
       StringTrimRight(pairs[i]);
       StringTrimLeft(pairs[i]);
+
+      // シンボルが利用可能か確認
+      if(!SymbolSelect(pairs[i], true)) {
+         PrintFormat("[警告] シンボル選択失敗（スキップ）: %s", pairs[i]);
+         handleBB[i] = INVALID_HANDLE;
+         handleRSI[i] = INVALID_HANDLE;
+         handleATR[i] = INVALID_HANDLE;
+         pairEnabled[i] = false;
+         continue;
+      }
 
       handleBB[i] = iBands(pairs[i], BB_TF, BB_Period, 0, BB_Deviation, PRICE_CLOSE);
       handleRSI[i] = iRSI(pairs[i], RSI_TF, RSI_Period, PRICE_CLOSE);
       handleATR[i] = iATR(pairs[i], ATR_TF, ATR_Period);
 
       if(handleBB[i] == INVALID_HANDLE || handleRSI[i] == INVALID_HANDLE || handleATR[i] == INVALID_HANDLE) {
-         PrintFormat("インジケータ作成失敗: %s", pairs[i]);
-         return INIT_FAILED;
+         PrintFormat("[警告] インジケータ作成失敗（スキップ）: %s", pairs[i]);
+         // 作成済みハンドルを解放
+         if(handleBB[i] != INVALID_HANDLE) { IndicatorRelease(handleBB[i]); handleBB[i] = INVALID_HANDLE; }
+         if(handleRSI[i] != INVALID_HANDLE) { IndicatorRelease(handleRSI[i]); handleRSI[i] = INVALID_HANDLE; }
+         if(handleATR[i] != INVALID_HANDLE) { IndicatorRelease(handleATR[i]); handleATR[i] = INVALID_HANDLE; }
+         pairEnabled[i] = false;
+         continue;
       }
+
+      pairEnabled[i] = true;
+      enabledCount++;
    }
 
-   Print("DayTrade_MultiPair V5 初期化完了 ペア数=", pairCount, " 複利=", CompoundMode);
+   if(enabledCount == 0) {
+      Print("有効な通貨ペアがありません。すべてのインジケータ作成に失敗しました。");
+      return INIT_FAILED;
+   }
+
+   PrintFormat("DayTrade_MultiPair V5 初期化完了 有効ペア数=%d/%d 複利=%s", enabledCount, pairCount, CompoundMode ? "ON" : "OFF");
 
    // 基準残高の設定
    if(Decay_BaseBalance > 0)
@@ -134,6 +160,8 @@ void OnDeinit(const int reason)
 void OnTick()
 {
    for(int i = 0; i < pairCount; i++) {
+      if(!pairEnabled[i]) continue;  // 無効ペアはスキップ
+
       int magic = MagicBase + i;
       string sym = pairs[i];
 
@@ -481,18 +509,32 @@ bool OpenOrder(string sym, ENUM_ORDER_TYPE type, double lot, int magic)
    MqlTradeRequest req = {};
    MqlTradeResult  res = {};
 
-   req.action    = TRADE_ACTION_DEAL;
-   req.symbol    = sym;
-   req.volume    = lot;
-   req.type      = type;
-   req.price     = (type == ORDER_TYPE_BUY) ? SymbolInfoDouble(sym, SYMBOL_ASK) : SymbolInfoDouble(sym, SYMBOL_BID);
-   req.deviation = 30;
-   req.magic     = magic;
-   req.comment   = "DT_MP_V5";
+   req.action       = TRADE_ACTION_DEAL;
+   req.symbol       = sym;
+   req.volume       = lot;
+   req.type         = type;
+   req.price        = (type == ORDER_TYPE_BUY) ? SymbolInfoDouble(sym, SYMBOL_ASK) : SymbolInfoDouble(sym, SYMBOL_BID);
+   req.deviation    = 30;
+   req.magic        = magic;
+   req.comment      = "DT_MP_V5";
+   req.type_filling = GetFillingMode(sym);
 
    if(!OrderSend(req, res)) {
-      PrintFormat("[Error] OrderSend failed: %s, lot=%.2f, err=%d", sym, lot, res.retcode);
-      return false;
+      // フィリングモードエラーの場合、別のモードで再試行
+      if(res.retcode == 10030) {
+         if(req.type_filling == ORDER_FILLING_FOK)
+            req.type_filling = ORDER_FILLING_IOC;
+         else
+            req.type_filling = ORDER_FILLING_FOK;
+
+         if(!OrderSend(req, res)) {
+            PrintFormat("[Error] OrderSend failed: %s, lot=%.2f, err=%d", sym, lot, res.retcode);
+            return false;
+         }
+      } else {
+         PrintFormat("[Error] OrderSend failed: %s, lot=%.2f, err=%d", sym, lot, res.retcode);
+         return false;
+      }
    }
 
    PrintFormat("[Open] %s %s lot=%.4f price=%.5f", sym, (type==ORDER_TYPE_BUY)?"BUY":"SELL", lot, res.price);
@@ -514,17 +556,30 @@ void CloseAllPositions(string sym, int magic)
       MqlTradeResult  res = {};
 
       long type = PositionGetInteger(POSITION_TYPE);
-      req.action    = TRADE_ACTION_DEAL;
-      req.symbol    = sym;
-      req.volume    = PositionGetDouble(POSITION_VOLUME);
-      req.type      = (type == POSITION_TYPE_BUY) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
-      req.price     = (type == POSITION_TYPE_BUY) ? SymbolInfoDouble(sym, SYMBOL_BID) : SymbolInfoDouble(sym, SYMBOL_ASK);
-      req.deviation = 30;
-      req.position  = ticket;
-      req.magic     = magic;
+      req.action       = TRADE_ACTION_DEAL;
+      req.symbol       = sym;
+      req.volume       = PositionGetDouble(POSITION_VOLUME);
+      req.type         = (type == POSITION_TYPE_BUY) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
+      req.price        = (type == POSITION_TYPE_BUY) ? SymbolInfoDouble(sym, SYMBOL_BID) : SymbolInfoDouble(sym, SYMBOL_ASK);
+      req.deviation    = 30;
+      req.position     = ticket;
+      req.magic        = magic;
+      req.type_filling = GetFillingMode(sym);
 
-      if(!OrderSend(req, res))
-         PrintFormat("[Error] Close failed: %s ticket=%d err=%d", sym, ticket, res.retcode);
+      if(!OrderSend(req, res)) {
+         // フィリングモードエラーの場合、別のモードで再試行
+         if(res.retcode == 10030) {
+            if(req.type_filling == ORDER_FILLING_FOK)
+               req.type_filling = ORDER_FILLING_IOC;
+            else
+               req.type_filling = ORDER_FILLING_FOK;
+
+            if(!OrderSend(req, res))
+               PrintFormat("[Error] Close failed: %s ticket=%d err=%d", sym, ticket, res.retcode);
+         } else {
+            PrintFormat("[Error] Close failed: %s ticket=%d err=%d", sym, ticket, res.retcode);
+         }
+      }
    }
 }
 
@@ -542,5 +597,29 @@ bool IsAccountAllowed()
          return true;
    }
    return false;
+}
+
+//+------------------------------------------------------------------+
+// フィリングモード自動判定
+//+------------------------------------------------------------------+
+ENUM_ORDER_TYPE_FILLING GetFillingMode(string sym)
+{
+   long fillMode = SymbolInfoInteger(sym, SYMBOL_FILLING_MODE);
+
+   // FOKが使えればFOK
+   if((fillMode & SYMBOL_FILLING_FOK) == SYMBOL_FILLING_FOK)
+      return ORDER_FILLING_FOK;
+
+   // IOCが使えればIOC
+   if((fillMode & SYMBOL_FILLING_IOC) == SYMBOL_FILLING_IOC)
+      return ORDER_FILLING_IOC;
+
+   // どちらも明示的に対応していない場合でもRETURNを試す
+   // ※バックテスト環境ではfillModeが0を返すことがある
+   // その場合はFOKを使用（バックテストではFOKが通常動作する）
+   if(fillMode == 0)
+      return ORDER_FILLING_FOK;
+
+   return ORDER_FILLING_RETURN;
 }
 //+------------------------------------------------------------------+

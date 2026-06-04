@@ -86,6 +86,8 @@ input bool   DailyClose_Enabled  = true;   // 日次利確決済 (true=有効)
 input int    DailyClose_Hour     = 23;     // 決済判定時刻（時）サーバー時間
 input int    DailyClose_Minute   = 50;     // 決済判定時刻（分）サーバー時間
 input int    DailyClose_MinPips  = 5;      // 決済に必要な最低利益 (pips)
+input bool   EarlyClose_Enabled  = true;   // 早期利確 (true=ポジション数条件で時間外も利確)
+input int    EarlyClose_MinPositions = 3;  // 早期利確に必要な最低ポジション数
 
 // --- リスク管理 ---
 input double MaxDrawdownPercent  = 0;      // 最大含み損率で損切り (残高の%, 0=無効)
@@ -551,6 +553,10 @@ void OnTick()
       if(DailyClose_Enabled)
          CheckDailyClose(i);
 
+      // 早期利確チェック（ポジション数条件）
+      if(EarlyClose_Enabled)
+         CheckEarlyClose(i);
+
       ProcessPair(i);
    }
 }
@@ -894,6 +900,39 @@ bool CheckMaxDrawdown(int idx)
    }
 
    return false;
+}
+
+//--- CheckEarlyClose ---
+void CheckEarlyClose(int idx)
+{
+   int posCount = CountPositions(idx);
+   if(posCount < EarlyClose_MinPositions) return;
+
+   int magic = g_pairs[idx].magicNumber;
+   string symbol = g_pairs[idx].symbol;
+   double totalProfit = 0;
+
+   int total = PositionsTotal();
+   for(int i = 0; i < total; i++)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != magic) continue;
+      if(PositionGetString(POSITION_SYMBOL) != symbol) continue;
+
+      totalProfit += PositionGetDouble(POSITION_PROFIT)
+                   + PositionGetDouble(POSITION_SWAP);
+   }
+
+   double minProfitAmount = DailyClose_MinPips * g_pairs[idx].pip * CalcTotalLots(idx) * SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_VALUE) / SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_SIZE);
+
+   if(totalProfit >= minProfitAmount)
+   {
+      PrintFormat("[TrendNanpinV2 INFO][Pat%s][%s] 早期利確: %dポジション, 合計損益 %.0f",
+                 g_patternNames[g_pairs[idx].patternIndex],
+                 symbol, posCount, totalProfit);
+      CloseAllPositions(idx);
+   }
 }
 
 //--- CheckDailyClose ---

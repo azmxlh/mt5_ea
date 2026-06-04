@@ -88,6 +88,7 @@ input int    DailyClose_MinPips  = 5;      // 決済に必要な最低利益 (pi
 
 // --- リスク管理 ---
 input double MaxDrawdownPercent  = 0;      // 最大含み損率で損切り (残高の%, 0=無効)
+input double NanpinPause_Percent = 0;      // 全体含み損率でナンピン停止 (残高の%, 0=無効)
 input double MaxSpread           = 5.0;
 input int    TradingStartHour    = 0;
 input int    TradingEndHour      = 0;
@@ -667,6 +668,7 @@ void CheckEntry(int idx)
 void CheckNanpin(int idx)
 {
    if(Max_Nanpin > 0 && g_pairs[idx].nanpinCount >= Max_Nanpin) return;
+   if(IsNanpinPaused()) return;
    if(!IsTradingHour()) return;
    if(!IsSpreadOK(idx)) return;
    if(!IsTrendAligned(idx)) return;
@@ -716,6 +718,7 @@ void CheckNanpin(int idx)
 void CheckNanpinWithLot(int idx, double baseLot)
 {
    if(Max_Nanpin > 0 && g_pairs[idx].nanpinCount >= Max_Nanpin) return;
+   if(IsNanpinPaused()) return;
    if(!IsTradingHour()) return;
    if(!IsSpreadOK(idx)) return;
    if(!IsTrendAligned(idx)) return;
@@ -801,6 +804,32 @@ double CalcNanpinLots(int count, string symbol)
 {
    double baseLot = CalcCompoundLots(symbol);
    return baseLot * MathPow(Lot_Multiplier, count + 1);
+}
+
+//--- IsNanpinPaused ---
+bool IsNanpinPaused()
+{
+   if(NanpinPause_Percent <= 0) return false;
+
+   double totalProfit = 0;
+   int total = PositionsTotal();
+   for(int i = 0; i < total; i++)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0) continue;
+      long magic = PositionGetInteger(POSITION_MAGIC);
+      if(magic < Magic_Number || magic > Magic_Number + PATTERN_COUNT * 10 + PAIR_COUNT) continue;
+
+      totalProfit += PositionGetDouble(POSITION_PROFIT)
+                   + PositionGetDouble(POSITION_SWAP);
+   }
+
+   if(totalProfit >= 0) return false;
+
+   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+   double drawdownPercent = MathAbs(totalProfit) / balance * 100.0;
+
+   return (drawdownPercent >= NanpinPause_Percent);
 }
 
 //--- CheckMaxDrawdown ---

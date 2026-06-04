@@ -77,7 +77,7 @@ input ENUM_TIMEFRAMES MA_Timeframe = PERIOD_H4;
 input int    Nanpin_Pips         = 50;
 input int    Max_Nanpin          = 0;      // 0=無制限
 input double Lot_Multiplier      = 1.0;
-input bool   AdaptiveNanpin_Enabled = false; // ATRベース適応ナンピン幅
+input bool   AdaptiveNanpin_Enabled = true;  // ATRベース適応ナンピン幅
 input int    ATR_Period          = 14;     // ATR計算期間
 input ENUM_TIMEFRAMES ATR_Timeframe = PERIOD_D1; // ATR計算時間軸
 

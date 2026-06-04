@@ -63,7 +63,7 @@ input bool   EnablePattern_C    = true;
 input bool   EnablePattern_D    = true;
 
 // --- 上位足トレンド設定（MAクロス + N本確認） ---
-input bool   TrendFollow_Enabled  = false; // トレンド追従モード (false=パターン固定方向)
+input bool   TrendFollow_Enabled  = true;  // トレンド追従モード (false=パターン固定方向)
 input ENUM_TIMEFRAMES TrendMA_Timeframe = PERIOD_W1;  // 上位足時間軸
 input int    TrendMA_Short_Period = 5;     // 短期MA期間
 input int    TrendMA_Long_Period  = 20;    // 長期MA期間
@@ -89,6 +89,18 @@ input bool   AdaptiveTP_Enabled    = true;   // ATR適応利確 (true=有効, fa
 input double AdaptiveTP_Multiplier = 1.5;    // ATR × 倍率 = 利確幅
 input int    AdaptiveTP_MinPips    = 10;     // 最低利確pips（下限）
 input int    AdaptiveTP_MaxPips    = 100;    // 最大利確pips（上限）
+
+// --- 損切りモード設定（有効時: ナンピンなし、ATRベースTP/SL） ---
+input bool   StopLossMode_Enabled    = true;   // 損切りモード (true=ナンピン無効化、SL設定)
+input double StopLossATR_Multiplier  = 1.0;    // ATR × 倍率 = 損切り幅
+input int    StopLoss_MinPips        = 10;     // 最低損切りpips（下限）
+input int    StopLoss_MaxPips        = 80;     // 最大損切りpips（上限）
+input int    SLMode_MaxPositions     = 0;      // 同時ポジション上限 (0=無制限, 損切りモード用)
+input bool   SLMode_Trailing_Enabled = true;   // トレーリングSL (含み益50%超で建値移動)
+input double SLMode_Trailing_Trigger = 0.5;    // トレーリング発動閾値 (TP幅の割合, 0.5=50%)
+input double SLMode_Trailing_Lock    = 0.1;    // トレーリング確保幅 (TP幅の割合, 0.1=10%利益確保)
+input bool   SLMode_VolFilter_Enabled = true;  // ボラティリティフィルター (ATR急騰時エントリー停止)
+input double SLMode_VolFilter_Multi  = 2.0;    // ATRが通常の何倍でフィルター発動
 
 // --- 日次決済設定 ---
 input bool   DailyClose_Enabled  = true;   // 日次利確決済 (true=有効)
@@ -119,6 +131,7 @@ struct PairState {
    int      trendMaShortHandle;
    int      trendMaLongHandle;
    int      atrHandle;
+   int      atrSlowHandle;      // ATR長期ハンドル（ボラフィルター用）
    int      swapDirection;
    int      oldDirection;       // 両建てモード: 旧ポジション方向 (0=なし)
    int      nanpinCount;
@@ -320,6 +333,12 @@ int OnInit()
    { Print("[TrendNanpinV2 ERROR] AdaptiveTP_MinPips は正の値が必要"); return(INIT_PARAMETERS_INCORRECT); }
    if(AdaptiveTP_Enabled && AdaptiveTP_MaxPips < AdaptiveTP_MinPips)
    { Print("[TrendNanpinV2 ERROR] AdaptiveTP_MaxPips >= AdaptiveTP_MinPips が必要"); return(INIT_PARAMETERS_INCORRECT); }
+   if(StopLossMode_Enabled && StopLossATR_Multiplier <= 0)
+   { Print("[TrendNanpinV2 ERROR] StopLossATR_Multiplier は正の値が必要"); return(INIT_PARAMETERS_INCORRECT); }
+   if(StopLossMode_Enabled && StopLoss_MinPips <= 0)
+   { Print("[TrendNanpinV2 ERROR] StopLoss_MinPips は正の値が必要"); return(INIT_PARAMETERS_INCORRECT); }
+   if(StopLossMode_Enabled && StopLoss_MaxPips < StopLoss_MinPips)
+   { Print("[TrendNanpinV2 ERROR] StopLoss_MaxPips >= StopLoss_MinPips が必要"); return(INIT_PARAMETERS_INCORRECT); }
 
    g_activePairCount = 0;
 
@@ -347,6 +366,7 @@ int OnInit()
             g_pairs[idx].maHandle         = INVALID_HANDLE;
             g_pairs[idx].trendMaShortHandle = INVALID_HANDLE;
             g_pairs[idx].trendMaLongHandle  = INVALID_HANDLE;
+            g_pairs[idx].atrSlowHandle    = INVALID_HANDLE;
             g_pairs[idx].nanpinCount      = 0;
             g_pairs[idx].lastEntryPrice   = 0;
             g_pairs[idx].lastBarTime      = 0;
@@ -371,6 +391,7 @@ int OnInit()
                g_pairs[idx].maHandle         = INVALID_HANDLE;
                g_pairs[idx].trendMaShortHandle = INVALID_HANDLE;
                g_pairs[idx].trendMaLongHandle  = INVALID_HANDLE;
+               g_pairs[idx].atrSlowHandle    = INVALID_HANDLE;
                g_pairs[idx].nanpinCount      = 0;
                g_pairs[idx].lastEntryPrice   = 0;
                g_pairs[idx].lastBarTime      = 0;
@@ -466,14 +487,26 @@ int OnInit()
          return(INIT_FAILED);
       }
 
-      // ATRハンドル作成（適応ナンピン幅 or 適応利確で使用）
+      // ATRハンドル作成（適応ナンピン幅 / 適応利確 / 損切りモードで使用）
       g_pairs[i].atrHandle = INVALID_HANDLE;
-      if(AdaptiveNanpin_Enabled || AdaptiveTP_Enabled)
+      if(AdaptiveNanpin_Enabled || AdaptiveTP_Enabled || StopLossMode_Enabled)
       {
          g_pairs[i].atrHandle = iATR(g_pairs[i].symbol, ATR_Timeframe, ATR_Period);
          if(g_pairs[i].atrHandle == INVALID_HANDLE)
          {
             PrintFormat("[TrendNanpinV2 ERROR] ATR作成失敗: %s", g_pairs[i].symbol);
+            return(INIT_FAILED);
+         }
+      }
+
+      // ATR長期ハンドル作成（ボラティリティフィルター用: ATR期間×3で長期平均を取る）
+      g_pairs[i].atrSlowHandle = INVALID_HANDLE;
+      if(StopLossMode_Enabled && SLMode_VolFilter_Enabled)
+      {
+         g_pairs[i].atrSlowHandle = iATR(g_pairs[i].symbol, ATR_Timeframe, ATR_Period * 3);
+         if(g_pairs[i].atrSlowHandle == INVALID_HANDLE)
+         {
+            PrintFormat("[TrendNanpinV2 ERROR] ATR長期作成失敗: %s", g_pairs[i].symbol);
             return(INIT_FAILED);
          }
       }
@@ -540,13 +573,20 @@ int OnInit()
          enabledPatterns += g_patternNames[pat];
       }
    }
-   PrintFormat("[TrendNanpinV2 INFO] 初期化完了: パターン=[%s], TrendMA=%d/%d(%s)確認%d本, EntryMA=%d(%s), Nanpin=%dpips, Profit=%s, 複利=%s",
+   PrintFormat("[TrendNanpinV2 INFO] 初期化完了: パターン=[%s], TrendMA=%d/%d(%s)確認%d本, EntryMA=%d(%s), Nanpin=%s, Profit=%s, 複利=%s",
               enabledPatterns, TrendMA_Short_Period, TrendMA_Long_Period,
               EnumToString(TrendMA_Timeframe), TrendConfirmBars,
-              MA_Period, EnumToString(MA_Timeframe), Nanpin_Pips,
+              MA_Period, EnumToString(MA_Timeframe),
+              StopLossMode_Enabled ? "OFF(損切りモード)" : StringFormat("%dpips", Nanpin_Pips),
               AdaptiveTP_Enabled ? StringFormat("ATR×%.1f(%d-%dpips)", AdaptiveTP_Multiplier, AdaptiveTP_MinPips, AdaptiveTP_MaxPips)
                                 : StringFormat("%dpips固定", Profit_Pips),
               CompoundMode ? StringFormat("ON(%.0f円/%.2fLot)", BalancePerLot, BaseLots) : "OFF");
+   if(StopLossMode_Enabled)
+      PrintFormat("[TrendNanpinV2 INFO] 損切りモード: SL=ATR×%.1f(%d-%dpips), 最大ポジション=%s, トレーリング=%s, ボラフィルター=%s",
+                 StopLossATR_Multiplier, StopLoss_MinPips, StopLoss_MaxPips,
+                 SLMode_MaxPositions > 0 ? StringFormat("%d", SLMode_MaxPositions) : "無制限",
+                 SLMode_Trailing_Enabled ? StringFormat("ON(発動%.0f%%/確保%.0f%%)", SLMode_Trailing_Trigger*100, SLMode_Trailing_Lock*100) : "OFF",
+                 SLMode_VolFilter_Enabled ? StringFormat("ON(×%.1f)", SLMode_VolFilter_Multi) : "OFF");
    return(INIT_SUCCEEDED);
 }
 
@@ -563,6 +603,8 @@ void OnDeinit(const int reason)
          IndicatorRelease(g_pairs[i].trendMaLongHandle);
       if(g_pairs[i].atrHandle != INVALID_HANDLE)
          IndicatorRelease(g_pairs[i].atrHandle);
+      if(g_pairs[i].atrSlowHandle != INVALID_HANDLE)
+         IndicatorRelease(g_pairs[i].atrSlowHandle);
    }
    PrintFormat("[TrendNanpinV2 INFO] EA停止: reason=%d", reason);
 }
@@ -581,12 +623,12 @@ void OnTick()
       if(TrendFollow_Enabled && !g_pairs[i].windingDown)
          CheckTrendReversal(i);
 
-      // 日次利確チェック
-      if(DailyClose_Enabled)
+      // 日次利確チェック（損切りモード時は無効）
+      if(DailyClose_Enabled && !StopLossMode_Enabled)
          CheckDailyClose(i);
 
-      // 早期利確チェック（ポジション数条件）
-      if(EarlyClose_Enabled)
+      // 早期利確チェック（損切りモード時は無効）
+      if(EarlyClose_Enabled && !StopLossMode_Enabled)
          CheckEarlyClose(i);
 
       ProcessPair(i);
@@ -596,6 +638,40 @@ void OnTick()
 //--- ProcessPair ---
 void ProcessPair(int idx)
 {
+   // 損切りモード: ナンピンなし、SLチェックのみ
+   if(StopLossMode_Enabled)
+   {
+      CheckTrailingStop(idx);
+      CheckStopLoss(idx);
+      CheckBatchClose(idx);
+
+      if(g_pairs[idx].windingDown)
+      {
+         if(CountPositions(idx) == 0)
+         {
+            g_pairs[idx].enabled = false;
+            PrintFormat("[TrendNanpinV2 INFO][Pat%s][%s] 全ポジション決済完了 - 停止",
+                       g_patternNames[g_pairs[idx].patternIndex], g_pairs[idx].symbol);
+         }
+         return;
+      }
+
+      if(!IsNewBar(idx)) return;
+
+      if(CountPositions(idx) == 0)
+      {
+         // 同時ポジション上限チェック
+         if(SLMode_MaxPositions > 0 && CountTotalSLModePositions() >= SLMode_MaxPositions)
+            return;
+         // ボラティリティフィルター
+         if(!IsVolatilityOK(idx))
+            return;
+         CheckEntry(idx);
+      }
+      return;
+   }
+
+   // 通常モード: ナンピンあり
    CheckBatchClose(idx);
 
    if(g_pairs[idx].windingDown)
@@ -768,6 +844,164 @@ double GetAdaptiveProfitPips(int idx)
    if(tpPips > AdaptiveTP_MaxPips) tpPips = AdaptiveTP_MaxPips;
 
    return tpPips;
+}
+
+//--- GetStopLossPips ---
+// ATRに基づく損切り幅(pips)を返す。損切りモード専用
+double GetStopLossPips(int idx)
+{
+   if(g_pairs[idx].atrHandle == INVALID_HANDLE)
+      return StopLoss_MinPips;
+
+   double atrBuffer[];
+   ArraySetAsSeries(atrBuffer, true);
+   if(CopyBuffer(g_pairs[idx].atrHandle, 0, 1, 1, atrBuffer) <= 0)
+      return StopLoss_MinPips;
+
+   // ATRをpipsに変換し倍率を適用
+   double atrPips = atrBuffer[0] / g_pairs[idx].pip;
+   double slPips = atrPips * StopLossATR_Multiplier;
+
+   // 上下限でクランプ
+   if(slPips < StopLoss_MinPips) slPips = StopLoss_MinPips;
+   if(slPips > StopLoss_MaxPips) slPips = StopLoss_MaxPips;
+
+   return slPips;
+}
+
+//--- CheckStopLoss ---
+// 損切りモード: ATRベースのSL判定。ポジションごとにエントリー価格からSL幅を超えたら損切り
+void CheckStopLoss(int idx)
+{
+   if(CountPositions(idx) == 0) return;
+
+   int magic = g_pairs[idx].magicNumber;
+   string symbol = g_pairs[idx].symbol;
+   double pip = g_pairs[idx].pip;
+   double slPips = GetStopLossPips(idx);
+
+   double currentBid = SymbolInfoDouble(symbol, SYMBOL_BID);
+   double currentAsk = SymbolInfoDouble(symbol, SYMBOL_ASK);
+
+   bool shouldClose = false;
+
+   int total = PositionsTotal();
+   for(int i = 0; i < total; i++)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != magic) continue;
+      if(PositionGetString(POSITION_SYMBOL) != symbol) continue;
+
+      double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+      ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+
+      if(posType == POSITION_TYPE_BUY)
+      {
+         if(openPrice - currentBid >= slPips * pip)
+         { shouldClose = true; break; }
+      }
+      else
+      {
+         if(currentAsk - openPrice >= slPips * pip)
+         { shouldClose = true; break; }
+      }
+   }
+
+   if(shouldClose)
+   {
+      PrintFormat("[TrendNanpinV2 INFO][Pat%s][%s] ★損切りモード決済: SL=%.1fpips (ATR×%.1f)",
+                 g_patternNames[g_pairs[idx].patternIndex],
+                 symbol, slPips, StopLossATR_Multiplier);
+      CloseAllPositions(idx);
+   }
+}
+
+//--- CheckTrailingStop ---
+// トレーリングSL: 含み益がTP幅のTrigger割合を超えたらSLを建値+Lock割合に移動
+void CheckTrailingStop(int idx)
+{
+   if(!SLMode_Trailing_Enabled) return;
+   if(CountPositions(idx) == 0) return;
+
+   int magic = g_pairs[idx].magicNumber;
+   string symbol = g_pairs[idx].symbol;
+   double pip = g_pairs[idx].pip;
+   double tpPips = GetAdaptiveProfitPips(idx);
+   double triggerPips = tpPips * SLMode_Trailing_Trigger;
+   double lockPips = tpPips * SLMode_Trailing_Lock;
+
+   double currentBid = SymbolInfoDouble(symbol, SYMBOL_BID);
+   double currentAsk = SymbolInfoDouble(symbol, SYMBOL_ASK);
+
+   int total = PositionsTotal();
+   for(int i = 0; i < total; i++)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != magic) continue;
+      if(PositionGetString(POSITION_SYMBOL) != symbol) continue;
+
+      double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+      double currentSL = PositionGetDouble(POSITION_SL);
+      ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+
+      double profitPips = 0;
+      double newSL = 0;
+
+      if(posType == POSITION_TYPE_BUY)
+      {
+         profitPips = (currentBid - openPrice) / pip;
+         newSL = openPrice + lockPips * pip;
+         if(profitPips >= triggerPips && (currentSL < newSL || currentSL == 0))
+         {
+            g_trade.SetExpertMagicNumber(magic);
+            g_trade.PositionModify(ticket, NormalizeDouble(newSL, g_pairs[idx].digits), 0);
+         }
+      }
+      else
+      {
+         profitPips = (openPrice - currentAsk) / pip;
+         newSL = openPrice - lockPips * pip;
+         if(profitPips >= triggerPips && (currentSL > newSL || currentSL == 0))
+         {
+            g_trade.SetExpertMagicNumber(magic);
+            g_trade.PositionModify(ticket, NormalizeDouble(newSL, g_pairs[idx].digits), 0);
+         }
+      }
+   }
+}
+
+//--- CountTotalSLModePositions ---
+int CountTotalSLModePositions()
+{
+   int totalCount = 0;
+   for(int i = 0; i < g_activePairCount; i++)
+   {
+      if(!g_pairs[i].enabled) continue;
+      totalCount += CountPositions(i);
+   }
+   return totalCount;
+}
+
+//--- IsVolatilityOK ---
+bool IsVolatilityOK(int idx)
+{
+   if(!SLMode_VolFilter_Enabled) return true;
+   if(g_pairs[idx].atrHandle == INVALID_HANDLE || g_pairs[idx].atrSlowHandle == INVALID_HANDLE)
+      return true;
+
+   double atrFast[], atrSlow[];
+   ArraySetAsSeries(atrFast, true);
+   ArraySetAsSeries(atrSlow, true);
+
+   if(CopyBuffer(g_pairs[idx].atrHandle, 0, 1, 1, atrFast) <= 0) return true;
+   if(CopyBuffer(g_pairs[idx].atrSlowHandle, 0, 1, 1, atrSlow) <= 0) return true;
+
+   if(atrSlow[0] <= 0) return true;
+
+   double ratio = atrFast[0] / atrSlow[0];
+   return (ratio < SLMode_VolFilter_Multi);
 }
 
 //--- CheckNanpin ---

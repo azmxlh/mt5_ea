@@ -1,9 +1,10 @@
 //+------------------------------------------------------------------+
 //| TrendNanpinEA_V2.mq5 - トレンド＋ナンピン EA（複利対応+上位足判定版）|
 //| パターンA〜D 複数同時稼働対応版（通常口座版）                       |
+//| トレンド判定: 短期MA/長期MAクロス + N本確認                         |
 //+------------------------------------------------------------------+
 #property copyright "Trend Nanpin EA V2"
-#property version   "4.10"
+#property version   "4.20"
 #property strict
 #include <Trade/Trade.mqh>
 
@@ -13,25 +14,24 @@ const long g_allowedAccounts[ALLOWED_ACCOUNT_COUNT] = {75545335, 70643523, 75548
 
 #define PAIR_COUNT     4
 #define PATTERN_COUNT  4
-#define MAX_PAIRS      (PATTERN_COUNT * PAIR_COUNT)  // 最大16ペア
+#define MAX_PAIRS      (PATTERN_COUNT * PAIR_COUNT)
 
 // パターン別シンボル定義（通常口座）
 const string g_patternSymbols[PATTERN_COUNT][PAIR_COUNT] = {
-   {"USDJPY", "GBPJPY", "AUDJPY", "EURAUD"},  // A: 円売り+ユーロ売り
-   {"NZDJPY", "CADJPY", "CHFJPY", "GBPAUD"},  // B: 円売り別ペア+ポンド買い
-   {"EURUSD", "GBPUSD", "AUDUSD", "USDCHF"},  // C: ドル買い中心
-   {"EURJPY", "USDJPY", "GBPCHF", "AUDNZD"}   // D: 高金利通貨買い
+   {"USDJPY", "GBPJPY", "AUDJPY", "EURAUD"},
+   {"NZDJPY", "CADJPY", "CHFJPY", "GBPAUD"},
+   {"EURUSD", "GBPUSD", "AUDUSD", "USDCHF"},
+   {"EURJPY", "USDJPY", "GBPCHF", "AUDNZD"}
 };
 
 // パターン別スワップ方向（初期値、上位足トレンドで上書きされる）
 const int g_patternSwapDir[PATTERN_COUNT][PAIR_COUNT] = {
-   { 1,  1,  1, -1},  // A: Buy, Buy, Buy, Sell
-   { 1,  1,  1, -1},  // B: Buy, Buy, Buy, Sell
-   {-1, -1, -1,  1},  // C: Sell, Sell, Sell, Buy
-   { 1,  1,  1,  1}   // D: Buy, Buy, Buy, Buy
+   { 1,  1,  1, -1},
+   { 1,  1,  1, -1},
+   {-1, -1, -1,  1},
+   { 1,  1,  1,  1}
 };
 
-// パターン名（ログ用）
 const string g_patternNames[PATTERN_COUNT] = {"A", "B", "C", "D"};
 
 // --- 基本設定 ---
@@ -44,15 +44,17 @@ input bool   CompoundMode       = false;   // 複利モード (true=有効)
 input double BalancePerLot      = 100000;  // 1ロット単位あたりの必要残高 (円)
 input double BaseLots           = 0.01;    // 複利計算の基準ロット
 
-// --- パターン有効/無効（複数同時ON可能） ---
-input bool   EnablePattern_A    = true;     // パターンA (USDJPY,GBPJPY,AUDJPY,EURAUD)
-input bool   EnablePattern_B    = true;    // パターンB (NZDJPY,CADJPY,CHFJPY,GBPAUD)
-input bool   EnablePattern_C    = true;    // パターンC (EURUSD,GBPUSD,AUDUSD,USDCHF)
-input bool   EnablePattern_D    = true;    // パターンD (EURJPY,USDJPY,GBPCHF,AUDNZD)
+// --- パターン有効/無効 ---
+input bool   EnablePattern_A    = true;
+input bool   EnablePattern_B    = true;
+input bool   EnablePattern_C    = true;
+input bool   EnablePattern_D    = true;
 
-// --- 上位足トレンド設定 ---
-input ENUM_TIMEFRAMES TrendMA_Timeframe = PERIOD_W1;  // 上位足時間軸 (トレンド判定用)
-input int    TrendMA_Period     = 20;      // 上位足MA期間
+// --- 上位足トレンド設定（MAクロス + N本確認） ---
+input ENUM_TIMEFRAMES TrendMA_Timeframe = PERIOD_W1;  // 上位足時間軸
+input int    TrendMA_Short_Period = 5;     // 短期MA期間
+input int    TrendMA_Long_Period  = 20;    // 長期MA期間
+input int    TrendConfirmBars    = 2;      // クロス維持確認本数
 
 // --- エントリー用MA設定 ---
 input int    MA_Period           = 100;
@@ -74,19 +76,20 @@ input int    TradingEndHour      = 0;
 struct PairState {
    string   symbol;
    bool     enabled;
-   bool     windingDown;     // true=パターンOFF、既存ポジション決済待ち
+   bool     windingDown;
    int      magicNumber;
-   int      patternIndex;    // どのパターンに属するか (0=A,1=B,2=C,3=D)
-   int      pairIndex;       // パターン内のペア番号 (0-3)
+   int      patternIndex;
+   int      pairIndex;
    double   pip;
    int      digits;
-   int      maHandle;        // エントリー用MA
-   int      trendMaHandle;   // 上位足トレンド判定用MA
-   int      swapDirection;   // +1=BUY, -1=SELL（上位足トレンドで動的に変更）
+   int      maHandle;           // エントリー用MA
+   int      trendMaShortHandle; // 上位足短期MA
+   int      trendMaLongHandle;  // 上位足長期MA
+   int      swapDirection;      // +1=BUY, -1=SELL
    int      nanpinCount;
    double   lastEntryPrice;
    datetime lastBarTime;
-   datetime lastTrendBarTime; // 上位足の新バー検出用
+   datetime lastTrendBarTime;
 };
 
 PairState g_pairs[MAX_PAIRS];
@@ -121,40 +124,46 @@ bool HasPositionsForMagic(int magic, string symbol)
    return false;
 }
 
-//--- GetTrendDirection ---
-// 上位足MAに対する前回確定足の終値で方向を判定
-// 戻り値: +1=BUY方向, -1=SELL方向, 0=判定不能
-int GetTrendDirection(int idx)
+//--- GetCrossDirection ---
+// 指定シフトの確定足で短期MA vs 長期MAの関係を返す
+// 戻り値: +1=短期>長期(BUY方向), -1=短期<長期(SELL方向), 0=判定不能
+int GetCrossDirection(int idx, int shift)
 {
-   double maBuffer[];
-   ArraySetAsSeries(maBuffer, true);
-   // 確定足(shift=1)のMA値を取得
-   if(CopyBuffer(g_pairs[idx].trendMaHandle, 0, 1, 1, maBuffer) <= 0)
-   {
-      PrintFormat("[TrendNanpinV2 ERROR][%s] 上位足MA取得失敗: err=%d", g_pairs[idx].symbol, GetLastError());
+   double shortMA[], longMA[];
+   ArraySetAsSeries(shortMA, true);
+   ArraySetAsSeries(longMA, true);
+
+   if(CopyBuffer(g_pairs[idx].trendMaShortHandle, 0, shift, 1, shortMA) <= 0)
       return 0;
+   if(CopyBuffer(g_pairs[idx].trendMaLongHandle, 0, shift, 1, longMA) <= 0)
+      return 0;
+
+   if(shortMA[0] > longMA[0]) return  1;
+   if(shortMA[0] < longMA[0]) return -1;
+   return 0;
+}
+
+//--- GetConfirmedTrendDirection ---
+// 過去TrendConfirmBars本が全て同じ方向であれば、その方向を返す
+// そうでなければ0（未確定）
+int GetConfirmedTrendDirection(int idx)
+{
+   if(TrendConfirmBars <= 0) return GetCrossDirection(idx, 1);
+
+   int firstDir = GetCrossDirection(idx, 1);
+   if(firstDir == 0) return 0;
+
+   // shift=1からTrendConfirmBars本分チェック
+   for(int i = 2; i <= TrendConfirmBars; i++)
+   {
+      int dir = GetCrossDirection(idx, i);
+      if(dir != firstDir) return 0;  // 一貫していない
    }
 
-   double ma = maBuffer[0];
-
-   // 確定足(shift=1)の終値を取得
-   double closeBuffer[];
-   ArraySetAsSeries(closeBuffer, true);
-   if(CopyClose(g_pairs[idx].symbol, TrendMA_Timeframe, 1, 1, closeBuffer) <= 0)
-   {
-      PrintFormat("[TrendNanpinV2 ERROR][%s] 上位足Close取得失敗: err=%d", g_pairs[idx].symbol, GetLastError());
-      return 0;
-   }
-
-   double closePrice = closeBuffer[0];
-
-   if(closePrice > ma) return  1;  // BUY方向
-   if(closePrice < ma) return -1;  // SELL方向
-   return 0;  // ちょうどMA上（稀）
+   return firstDir;
 }
 
 //--- IsNewTrendBar ---
-// 上位足の新しいバーが確定したかチェック
 bool IsNewTrendBar(int idx)
 {
    datetime barTime = iTime(g_pairs[idx].symbol, TrendMA_Timeframe, 0);
@@ -168,28 +177,25 @@ bool IsNewTrendBar(int idx)
 }
 
 //--- CheckTrendReversal ---
-// 上位足トレンド転換チェック: 転換時は損切り→新方向でエントリー
 void CheckTrendReversal(int idx)
 {
    if(!IsNewTrendBar(idx)) return;
 
-   int newDirection = GetTrendDirection(idx);
-   if(newDirection == 0) return;  // 判定不能
+   int confirmedDir = GetConfirmedTrendDirection(idx);
+   if(confirmedDir == 0) return;  // 未確定
 
    int oldDirection = g_pairs[idx].swapDirection;
+   if(confirmedDir == oldDirection) return;  // 方向変わらず
 
-   // 方向が同じなら何もしない
-   if(newDirection == oldDirection) return;
-
-   // --- トレンド転換検出 ---
-   PrintFormat("[TrendNanpinV2 INFO][Pat%s][%s] ★トレンド転換検出: %s → %s",
+   // --- トレンド転換確定 ---
+   PrintFormat("[TrendNanpinV2 INFO][Pat%s][%s] ★トレンド転換確定: %s → %s (MA%d/MA%d クロス %d本確認)",
               g_patternNames[g_pairs[idx].patternIndex],
               g_pairs[idx].symbol,
               (oldDirection == 1) ? "BUY" : "SELL",
-              (newDirection == 1) ? "BUY" : "SELL");
+              (confirmedDir == 1) ? "BUY" : "SELL",
+              TrendMA_Short_Period, TrendMA_Long_Period, TrendConfirmBars);
 
-   // 方向を更新
-   g_pairs[idx].swapDirection = newDirection;
+   g_pairs[idx].swapDirection = confirmedDir;
 
    // 既存ポジションがあれば損切り
    int posCount = CountPositions(idx);
@@ -201,10 +207,10 @@ void CheckTrendReversal(int idx)
       CloseAllPositions(idx);
    }
 
-   // 損切り後に即エントリー（スプレッドチェックのみ）
+   // 損切り後に即エントリー
    if(!IsSpreadOK(idx))
    {
-      PrintFormat("[TrendNanpinV2 INFO][Pat%s][%s] スプレッド超過のため即エントリー見送り（次回バーでエントリー）",
+      PrintFormat("[TrendNanpinV2 INFO][Pat%s][%s] スプレッド超過のため即エントリー見送り",
                  g_patternNames[g_pairs[idx].patternIndex], g_pairs[idx].symbol);
       return;
    }
@@ -214,7 +220,7 @@ void CheckTrendReversal(int idx)
    g_trade.SetExpertMagicNumber(g_pairs[idx].magicNumber);
 
    bool result = false;
-   if(newDirection == 1)
+   if(confirmedDir == 1)
       result = g_trade.Buy(lots, symbol, 0, 0, 0, "TrendNanpinV2");
    else
       result = g_trade.Sell(lots, symbol, 0, 0, 0, "TrendNanpinV2");
@@ -226,7 +232,7 @@ void CheckTrendReversal(int idx)
       g_pairs[idx].lastEntryPrice = entryPrice;
       PrintFormat("[TrendNanpinV2 INFO][Pat%s][%s] トレンド転換後エントリー: %s %.2f lots @ %s",
                  g_patternNames[g_pairs[idx].patternIndex],
-                 symbol, (newDirection == 1) ? "BUY" : "SELL",
+                 symbol, (confirmedDir == 1) ? "BUY" : "SELL",
                  lots, DoubleToString(entryPrice, g_pairs[idx].digits));
    }
    else
@@ -236,7 +242,6 @@ void CheckTrendReversal(int idx)
 //--- OnInit ---
 int OnInit()
 {
-   // --- 口座番号チェック ---
    long accountNumber = AccountInfoInteger(ACCOUNT_LOGIN);
    bool accountAllowed = false;
    for(int i = 0; i < ALLOWED_ACCOUNT_COUNT; i++)
@@ -245,11 +250,10 @@ int OnInit()
    }
    if(!accountAllowed)
    {
-      PrintFormat("[TrendNanpinV2 ERROR] この口座(%d)では利用できません。許可された口座で実行してください。", accountNumber);
+      PrintFormat("[TrendNanpinV2 ERROR] この口座(%d)では利用できません。", accountNumber);
       return(INIT_FAILED);
    }
 
-   // パラメータ検証
    if(Lots <= 0)
    { Print("[TrendNanpinV2 ERROR] Lots は正の値が必要"); return(INIT_PARAMETERS_INCORRECT); }
    if(Nanpin_Pips <= 0)
@@ -260,14 +264,17 @@ int OnInit()
    { Print("[TrendNanpinV2 ERROR] Max_Nanpin は0以上が必要 (0=無制限)"); return(INIT_PARAMETERS_INCORRECT); }
    if(MA_Period <= 0)
    { Print("[TrendNanpinV2 ERROR] MA_Period は正の値が必要"); return(INIT_PARAMETERS_INCORRECT); }
-   if(TrendMA_Period <= 0)
-   { Print("[TrendNanpinV2 ERROR] TrendMA_Period は正の値が必要"); return(INIT_PARAMETERS_INCORRECT); }
+   if(TrendMA_Short_Period <= 0 || TrendMA_Long_Period <= 0)
+   { Print("[TrendNanpinV2 ERROR] TrendMA期間は正の値が必要"); return(INIT_PARAMETERS_INCORRECT); }
+   if(TrendMA_Short_Period >= TrendMA_Long_Period)
+   { Print("[TrendNanpinV2 ERROR] TrendMA_Short_Period < TrendMA_Long_Period が必要"); return(INIT_PARAMETERS_INCORRECT); }
+   if(TrendConfirmBars < 1)
+   { Print("[TrendNanpinV2 ERROR] TrendConfirmBars は1以上が必要"); return(INIT_PARAMETERS_INCORRECT); }
    if(CompoundMode && BalancePerLot <= 0)
    { Print("[TrendNanpinV2 ERROR] BalancePerLot は正の値が必要"); return(INIT_PARAMETERS_INCORRECT); }
    if(CompoundMode && BaseLots <= 0)
    { Print("[TrendNanpinV2 ERROR] BaseLots は正の値が必要"); return(INIT_PARAMETERS_INCORRECT); }
 
-   // ペア設定初期化（有効パターンのペアを順に登録）
    g_activePairCount = 0;
 
    for(int pat = 0; pat < PATTERN_COUNT; pat++)
@@ -282,20 +289,21 @@ int OnInit()
          if(patEnabled)
          {
             int idx = g_activePairCount;
-            g_pairs[idx].symbol         = sym;
-            g_pairs[idx].enabled        = true;
-            g_pairs[idx].windingDown    = false;
-            g_pairs[idx].patternIndex   = pat;
-            g_pairs[idx].pairIndex      = p;
-            g_pairs[idx].magicNumber    = magic;
-            g_pairs[idx].pip            = SymbolInfoDouble(sym, SYMBOL_POINT) * 10;
-            g_pairs[idx].digits         = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
-            g_pairs[idx].swapDirection  = g_patternSwapDir[pat][p];  // 初期値
-            g_pairs[idx].maHandle       = INVALID_HANDLE;
-            g_pairs[idx].trendMaHandle  = INVALID_HANDLE;
-            g_pairs[idx].nanpinCount    = 0;
-            g_pairs[idx].lastEntryPrice = 0;
-            g_pairs[idx].lastBarTime    = 0;
+            g_pairs[idx].symbol           = sym;
+            g_pairs[idx].enabled          = true;
+            g_pairs[idx].windingDown      = false;
+            g_pairs[idx].patternIndex     = pat;
+            g_pairs[idx].pairIndex        = p;
+            g_pairs[idx].magicNumber      = magic;
+            g_pairs[idx].pip              = SymbolInfoDouble(sym, SYMBOL_POINT) * 10;
+            g_pairs[idx].digits           = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+            g_pairs[idx].swapDirection    = g_patternSwapDir[pat][p];
+            g_pairs[idx].maHandle         = INVALID_HANDLE;
+            g_pairs[idx].trendMaShortHandle = INVALID_HANDLE;
+            g_pairs[idx].trendMaLongHandle  = INVALID_HANDLE;
+            g_pairs[idx].nanpinCount      = 0;
+            g_pairs[idx].lastEntryPrice   = 0;
+            g_pairs[idx].lastBarTime      = 0;
             g_pairs[idx].lastTrendBarTime = 0;
             g_activePairCount++;
          }
@@ -304,23 +312,24 @@ int OnInit()
             if(HasPositionsForMagic(magic, sym))
             {
                int idx = g_activePairCount;
-               g_pairs[idx].symbol         = sym;
-               g_pairs[idx].enabled        = true;
-               g_pairs[idx].windingDown    = true;
-               g_pairs[idx].patternIndex   = pat;
-               g_pairs[idx].pairIndex      = p;
-               g_pairs[idx].magicNumber    = magic;
-               g_pairs[idx].pip            = SymbolInfoDouble(sym, SYMBOL_POINT) * 10;
-               g_pairs[idx].digits         = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
-               g_pairs[idx].swapDirection  = g_patternSwapDir[pat][p];
-               g_pairs[idx].maHandle       = INVALID_HANDLE;
-               g_pairs[idx].trendMaHandle  = INVALID_HANDLE;
-               g_pairs[idx].nanpinCount    = 0;
-               g_pairs[idx].lastEntryPrice = 0;
-               g_pairs[idx].lastBarTime    = 0;
+               g_pairs[idx].symbol           = sym;
+               g_pairs[idx].enabled          = true;
+               g_pairs[idx].windingDown      = true;
+               g_pairs[idx].patternIndex     = pat;
+               g_pairs[idx].pairIndex        = p;
+               g_pairs[idx].magicNumber      = magic;
+               g_pairs[idx].pip              = SymbolInfoDouble(sym, SYMBOL_POINT) * 10;
+               g_pairs[idx].digits           = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+               g_pairs[idx].swapDirection    = g_patternSwapDir[pat][p];
+               g_pairs[idx].maHandle         = INVALID_HANDLE;
+               g_pairs[idx].trendMaShortHandle = INVALID_HANDLE;
+               g_pairs[idx].trendMaLongHandle  = INVALID_HANDLE;
+               g_pairs[idx].nanpinCount      = 0;
+               g_pairs[idx].lastEntryPrice   = 0;
+               g_pairs[idx].lastBarTime      = 0;
                g_pairs[idx].lastTrendBarTime = 0;
                g_activePairCount++;
-               PrintFormat("[TrendNanpinV2 INFO][Pat%s][%s] パターンOFF - 既存ポジション決済待ちモード",
+               PrintFormat("[TrendNanpinV2 INFO][Pat%s][%s] パターンOFF - 既存ポジション決済待ち",
                           g_patternNames[pat], sym);
             }
          }
@@ -330,7 +339,6 @@ int OnInit()
    if(g_activePairCount == 0)
    { Print("[TrendNanpinV2 ERROR] 有効なペアがありません"); return(INIT_PARAMETERS_INCORRECT); }
 
-   // シングルペアモード
    if(SinglePairMode)
    {
       string chartSymbol = _Symbol;
@@ -341,7 +349,7 @@ int OnInit()
       }
       if(foundIdx == -1)
       {
-         PrintFormat("[TrendNanpinV2 ERROR] シングルペアモード: %s は有効パターンの管理対象外", chartSymbol);
+         PrintFormat("[TrendNanpinV2 ERROR] シングルペアモード: %s は管理対象外", chartSymbol);
          return(INIT_FAILED);
       }
       if(foundIdx != 0)
@@ -354,16 +362,17 @@ int OnInit()
          g_pairs[0].digits        = g_pairs[foundIdx].digits;
          g_pairs[0].swapDirection = g_pairs[foundIdx].swapDirection;
       }
-      g_pairs[0].magicNumber      = Magic_Number;
-      g_pairs[0].windingDown      = false;
-      g_pairs[0].maHandle         = INVALID_HANDLE;
-      g_pairs[0].trendMaHandle    = INVALID_HANDLE;
-      g_pairs[0].nanpinCount      = 0;
-      g_pairs[0].lastEntryPrice   = 0;
-      g_pairs[0].lastBarTime      = 0;
-      g_pairs[0].lastTrendBarTime = 0;
+      g_pairs[0].magicNumber        = Magic_Number;
+      g_pairs[0].windingDown        = false;
+      g_pairs[0].maHandle           = INVALID_HANDLE;
+      g_pairs[0].trendMaShortHandle = INVALID_HANDLE;
+      g_pairs[0].trendMaLongHandle  = INVALID_HANDLE;
+      g_pairs[0].nanpinCount        = 0;
+      g_pairs[0].lastEntryPrice     = 0;
+      g_pairs[0].lastBarTime        = 0;
+      g_pairs[0].lastTrendBarTime   = 0;
       g_activePairCount = 1;
-      PrintFormat("[TrendNanpinV2 INFO] シングルペアモード: %s のみ稼働 (パターン%s)",
+      PrintFormat("[TrendNanpinV2 INFO] シングルペアモード: %s (パターン%s)",
                  chartSymbol, g_patternNames[g_pairs[0].patternIndex]);
    }
    else
@@ -373,17 +382,16 @@ int OnInit()
          if(!g_pairs[i].enabled) continue;
          if(!SymbolInfoInteger(g_pairs[i].symbol, SYMBOL_EXIST))
          {
-            PrintFormat("[TrendNanpinV2 ERROR] シンボル利用不可: %s (パターン%s)",
-                       g_pairs[i].symbol, g_patternNames[g_pairs[i].patternIndex]);
+            PrintFormat("[TrendNanpinV2 ERROR] シンボル利用不可: %s", g_pairs[i].symbol);
             return(INIT_FAILED);
          }
          if(!SymbolSelect(g_pairs[i].symbol, true))
             PrintFormat("[TrendNanpinV2 WARN][%s] 気配値への追加に失敗", g_pairs[i].symbol);
       }
-      PrintFormat("[TrendNanpinV2 INFO] マルチペアモード稼働: %dペア", g_activePairCount);
+      PrintFormat("[TrendNanpinV2 INFO] マルチペアモード: %dペア", g_activePairCount);
    }
 
-   // MAインジケータハンドル作成（エントリー用 + 上位足トレンド用）
+   // MAインジケータハンドル作成
    for(int i = 0; i < g_activePairCount; i++)
    {
       if(!g_pairs[i].enabled) continue;
@@ -392,54 +400,60 @@ int OnInit()
       g_pairs[i].maHandle = iMA(g_pairs[i].symbol, MA_Timeframe, MA_Period, 0, MODE_SMA, PRICE_CLOSE);
       if(g_pairs[i].maHandle == INVALID_HANDLE)
       {
-         PrintFormat("[TrendNanpinV2 ERROR] エントリーMA作成失敗: %s, err=%d", g_pairs[i].symbol, GetLastError());
+         PrintFormat("[TrendNanpinV2 ERROR] エントリーMA作成失敗: %s", g_pairs[i].symbol);
          return(INIT_FAILED);
       }
 
-      // 上位足トレンド判定用MA
-      g_pairs[i].trendMaHandle = iMA(g_pairs[i].symbol, TrendMA_Timeframe, TrendMA_Period, 0, MODE_SMA, PRICE_CLOSE);
-      if(g_pairs[i].trendMaHandle == INVALID_HANDLE)
+      // 上位足短期MA
+      g_pairs[i].trendMaShortHandle = iMA(g_pairs[i].symbol, TrendMA_Timeframe, TrendMA_Short_Period, 0, MODE_SMA, PRICE_CLOSE);
+      if(g_pairs[i].trendMaShortHandle == INVALID_HANDLE)
       {
-         PrintFormat("[TrendNanpinV2 ERROR] トレンドMA作成失敗: %s, err=%d", g_pairs[i].symbol, GetLastError());
+         PrintFormat("[TrendNanpinV2 ERROR] トレンド短期MA作成失敗: %s", g_pairs[i].symbol);
+         return(INIT_FAILED);
+      }
+
+      // 上位足長期MA
+      g_pairs[i].trendMaLongHandle = iMA(g_pairs[i].symbol, TrendMA_Timeframe, TrendMA_Long_Period, 0, MODE_SMA, PRICE_CLOSE);
+      if(g_pairs[i].trendMaLongHandle == INVALID_HANDLE)
+      {
+         PrintFormat("[TrendNanpinV2 ERROR] トレンド長期MA作成失敗: %s", g_pairs[i].symbol);
          return(INIT_FAILED);
       }
    }
 
-   // 初期トレンド方向を上位足MAから設定
+   // 初期トレンド方向を設定
    for(int i = 0; i < g_activePairCount; i++)
    {
       if(!g_pairs[i].enabled) continue;
 
-      // lastTrendBarTimeを初期化（初回のIsNewTrendBarで即トリガーさせない）
       g_pairs[i].lastTrendBarTime = iTime(g_pairs[i].symbol, TrendMA_Timeframe, 0);
 
-      int trendDir = GetTrendDirection(i);
+      int trendDir = GetConfirmedTrendDirection(i);
       if(trendDir != 0)
       {
          g_pairs[i].swapDirection = trendDir;
-         PrintFormat("[TrendNanpinV2 INFO][Pat%s][%s] 初期トレンド方向: %s (上位足MA%d %s)",
+         PrintFormat("[TrendNanpinV2 INFO][Pat%s][%s] 初期トレンド: %s (MA%d/MA%d クロス確認済)",
                     g_patternNames[g_pairs[i].patternIndex],
                     g_pairs[i].symbol,
                     (trendDir == 1) ? "BUY" : "SELL",
-                    TrendMA_Period, EnumToString(TrendMA_Timeframe));
+                    TrendMA_Short_Period, TrendMA_Long_Period);
       }
       else
       {
-         // 判定不能時はパターン定義の初期値を維持
-         PrintFormat("[TrendNanpinV2 INFO][Pat%s][%s] トレンド判定不能 → パターン初期値(%s)で開始",
+         // 確認本数不足時はクロス方向だけで判定
+         int crossDir = GetCrossDirection(i, 1);
+         if(crossDir != 0)
+            g_pairs[i].swapDirection = crossDir;
+         PrintFormat("[TrendNanpinV2 INFO][Pat%s][%s] 初期トレンド: %s (確認本数不足→クロス方向で開始)",
                     g_patternNames[g_pairs[i].patternIndex],
                     g_pairs[i].symbol,
                     (g_pairs[i].swapDirection == 1) ? "BUY" : "SELL");
       }
    }
 
-   // CTrade初期化
    g_trade.SetDeviationInPoints(10);
-
-   // 既存ポジションからナンピン状態を復元
    RestoreStateFromPositions();
 
-   // 起動ログ
    for(int i = 0; i < g_activePairCount; i++)
    {
       if(!g_pairs[i].enabled) continue;
@@ -458,10 +472,11 @@ int OnInit()
          enabledPatterns += g_patternNames[pat];
       }
    }
-   PrintFormat("[TrendNanpinV2 INFO] 初期化完了: パターン=[%s], TrendMA=%d(%s), EntryMA=%d(%s), Nanpin=%dpips, Max=%d, Profit=%dpips, 複利=%s",
-              enabledPatterns, TrendMA_Period, EnumToString(TrendMA_Timeframe),
-              MA_Period, EnumToString(MA_Timeframe), Nanpin_Pips, Max_Nanpin, Profit_Pips,
-              CompoundMode ? StringFormat("ON(残高%.0f円/%.2fLot)", BalancePerLot, BaseLots) : "OFF");
+   PrintFormat("[TrendNanpinV2 INFO] 初期化完了: パターン=[%s], TrendMA=%d/%d(%s)確認%d本, EntryMA=%d(%s), Nanpin=%dpips, Profit=%dpips, 複利=%s",
+              enabledPatterns, TrendMA_Short_Period, TrendMA_Long_Period,
+              EnumToString(TrendMA_Timeframe), TrendConfirmBars,
+              MA_Period, EnumToString(MA_Timeframe), Nanpin_Pips, Profit_Pips,
+              CompoundMode ? StringFormat("ON(%.0f円/%.2fLot)", BalancePerLot, BaseLots) : "OFF");
    return(INIT_SUCCEEDED);
 }
 
@@ -471,15 +486,11 @@ void OnDeinit(const int reason)
    for(int i = 0; i < g_activePairCount; i++)
    {
       if(g_pairs[i].maHandle != INVALID_HANDLE)
-      {
          IndicatorRelease(g_pairs[i].maHandle);
-         g_pairs[i].maHandle = INVALID_HANDLE;
-      }
-      if(g_pairs[i].trendMaHandle != INVALID_HANDLE)
-      {
-         IndicatorRelease(g_pairs[i].trendMaHandle);
-         g_pairs[i].trendMaHandle = INVALID_HANDLE;
-      }
+      if(g_pairs[i].trendMaShortHandle != INVALID_HANDLE)
+         IndicatorRelease(g_pairs[i].trendMaShortHandle);
+      if(g_pairs[i].trendMaLongHandle != INVALID_HANDLE)
+         IndicatorRelease(g_pairs[i].trendMaLongHandle);
    }
    PrintFormat("[TrendNanpinV2 INFO] EA停止: reason=%d", reason);
 }
@@ -491,7 +502,6 @@ void OnTick()
    {
       if(!g_pairs[i].enabled) continue;
 
-      // 上位足トレンド転換チェック（毎ティック。内部で新バー判定）
       if(!g_pairs[i].windingDown)
          CheckTrendReversal(i);
 
@@ -504,7 +514,6 @@ void ProcessPair(int idx)
 {
    CheckBatchClose(idx);
 
-   // windingDown: パターンOFFだが既存ポジション決済待ち
    if(g_pairs[idx].windingDown)
    {
       if(CountPositions(idx) == 0)
@@ -523,7 +532,6 @@ void ProcessPair(int idx)
 
    if(!IsNewBar(idx)) return;
 
-   // ロット変更検出
    int posCount = CountPositions(idx);
    double existingLot = GetExistingLot(idx);
    if(existingLot > 0)
@@ -575,16 +583,12 @@ double GetExistingLot(int idx)
 }
 
 //--- IsTrendAligned ---
-// エントリー用MA（H4等）でトレンド方向と一致しているか確認
 bool IsTrendAligned(int idx)
 {
    double maBuffer[];
    ArraySetAsSeries(maBuffer, true);
    if(CopyBuffer(g_pairs[idx].maHandle, 0, 0, 1, maBuffer) <= 0)
-   {
-      PrintFormat("[TrendNanpinV2 ERROR][%s] エントリーMA取得失敗: err=%d", g_pairs[idx].symbol, GetLastError());
       return false;
-   }
 
    double ma = maBuffer[0];
    string symbol = g_pairs[idx].symbol;
@@ -887,10 +891,9 @@ void RestoreStateFromPositions()
       {
          g_pairs[idx].nanpinCount    = posCount - 1;
          g_pairs[idx].lastEntryPrice = latestPrice;
-         PrintFormat("[TrendNanpinV2 INFO][Pat%s][%s] 状態復元: ポジション数=%d, ナンピン回数=%d, 直近価格=%s",
+         PrintFormat("[TrendNanpinV2 INFO][Pat%s][%s] 状態復元: ポジション数=%d, ナンピン=%d",
                     g_patternNames[g_pairs[idx].patternIndex],
-                    symbol, posCount, g_pairs[idx].nanpinCount,
-                    DoubleToString(latestPrice, g_pairs[idx].digits));
+                    symbol, posCount, g_pairs[idx].nanpinCount);
       }
    }
 }

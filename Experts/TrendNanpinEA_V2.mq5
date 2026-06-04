@@ -68,6 +68,12 @@ input double Lot_Multiplier      = 1.0;
 // --- 決済設定 ---
 input int    Profit_Pips         = 30;
 
+// --- 日次決済設定 ---
+input bool   DailyClose_Enabled  = true;   // 日次利確決済 (true=有効)
+input int    DailyClose_Hour     = 23;     // 決済判定時刻（時）サーバー時間
+input int    DailyClose_Minute   = 50;     // 決済判定時刻（分）サーバー時間
+input int    DailyClose_MinPips  = 5;      // 決済に必要な最低利益 (pips)
+
 // --- リスク管理 ---
 input double MaxSpread           = 5.0;
 input int    TradingStartHour    = 0;
@@ -90,6 +96,7 @@ struct PairState {
    double   lastEntryPrice;
    datetime lastBarTime;
    datetime lastTrendBarTime;
+   datetime lastDailyCloseDate; // 日次決済実行済み日付
 };
 
 PairState g_pairs[MAX_PAIRS];
@@ -305,6 +312,7 @@ int OnInit()
             g_pairs[idx].lastEntryPrice   = 0;
             g_pairs[idx].lastBarTime      = 0;
             g_pairs[idx].lastTrendBarTime = 0;
+            g_pairs[idx].lastDailyCloseDate = 0;
             g_activePairCount++;
          }
          else
@@ -328,6 +336,7 @@ int OnInit()
                g_pairs[idx].lastEntryPrice   = 0;
                g_pairs[idx].lastBarTime      = 0;
                g_pairs[idx].lastTrendBarTime = 0;
+               g_pairs[idx].lastDailyCloseDate = 0;
                g_activePairCount++;
                PrintFormat("[TrendNanpinV2 INFO][Pat%s][%s] パターンOFF - 既存ポジション決済待ち",
                           g_patternNames[pat], sym);
@@ -371,6 +380,7 @@ int OnInit()
       g_pairs[0].lastEntryPrice     = 0;
       g_pairs[0].lastBarTime        = 0;
       g_pairs[0].lastTrendBarTime   = 0;
+      g_pairs[0].lastDailyCloseDate = 0;
       g_activePairCount = 1;
       PrintFormat("[TrendNanpinV2 INFO] シングルペアモード: %s (パターン%s)",
                  chartSymbol, g_patternNames[g_pairs[0].patternIndex]);
@@ -504,6 +514,10 @@ void OnTick()
 
       if(!g_pairs[i].windingDown)
          CheckTrendReversal(i);
+
+      // 日次利確チェック
+      if(DailyClose_Enabled)
+         CheckDailyClose(i);
 
       ProcessPair(i);
    }
@@ -769,6 +783,82 @@ double CalcNanpinLots(int count, string symbol)
 {
    double baseLot = CalcCompoundLots(symbol);
    return baseLot * MathPow(Lot_Multiplier, count + 1);
+}
+
+//--- CheckDailyClose ---
+// 日次利確: サーバー時間の指定時刻以降に、合計損益がプラスなら決済
+void CheckDailyClose(int idx)
+{
+   if(CountPositions(idx) == 0) return;
+
+   MqlDateTime dt;
+   TimeToStruct(TimeCurrent(), dt);
+
+   // 指定時刻に達していなければスキップ
+   if(dt.hour < DailyClose_Hour) return;
+   if(dt.hour == DailyClose_Hour && dt.min < DailyClose_Minute) return;
+
+   // 同日に既に実行済みならスキップ
+   datetime today = StringToTime(StringFormat("%04d.%02d.%02d", dt.year, dt.mon, dt.day));
+   if(g_pairs[idx].lastDailyCloseDate == today) return;
+
+   // 全ポジションの合計損益を計算（利益+スワップ+手数料）
+   int magic = g_pairs[idx].magicNumber;
+   string symbol = g_pairs[idx].symbol;
+   double totalProfit = 0;
+
+   int total = PositionsTotal();
+   for(int i = 0; i < total; i++)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != magic) continue;
+      if(PositionGetString(POSITION_SYMBOL) != symbol) continue;
+
+      totalProfit += PositionGetDouble(POSITION_PROFIT)
+                   + PositionGetDouble(POSITION_SWAP);
+      // 手数料は取引履歴からしか取得できないため、
+      // POSITION_PROFITに含まれないブローカーの場合は別途考慮が必要
+   }
+
+   // 最低利益pips相当の金額を計算（概算）
+   double minProfitAmount = DailyClose_MinPips * g_pairs[idx].pip * CalcTotalLots(idx) * SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_VALUE) / SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_SIZE);
+
+   // 合計損益が最低利益以上ならば決済
+   if(totalProfit >= minProfitAmount)
+   {
+      g_pairs[idx].lastDailyCloseDate = today;
+      PrintFormat("[TrendNanpinV2 INFO][Pat%s][%s] 日次利確決済: 合計損益 %.0f (最低基準 %.0f)",
+                 g_patternNames[g_pairs[idx].patternIndex],
+                 symbol, totalProfit, minProfitAmount);
+      CloseAllPositions(idx);
+   }
+   else
+   {
+      // 基準未達でもフラグを立てて再チェック防止（次ティックで再判定可能にするため立てない）
+      // → 時刻内は毎ティックチェックし続ける（価格変動で条件達成する可能性）
+   }
+}
+
+//--- CalcTotalLots ---
+// 指定ペアの全ポジション合計ロット数
+double CalcTotalLots(int idx)
+{
+   int magic = g_pairs[idx].magicNumber;
+   string symbol = g_pairs[idx].symbol;
+   double total_lots = 0;
+
+   int total = PositionsTotal();
+   for(int i = 0; i < total; i++)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != magic) continue;
+      if(PositionGetString(POSITION_SYMBOL) != symbol) continue;
+
+      total_lots += PositionGetDouble(POSITION_VOLUME);
+   }
+   return total_lots;
 }
 
 //--- CalcAveragePrice ---

@@ -63,6 +63,7 @@ input bool   EnablePattern_C    = true;
 input bool   EnablePattern_D    = true;
 
 // --- 上位足トレンド設定（MAクロス + N本確認） ---
+input bool   TrendFollow_Enabled  = false; // トレンド追従モード (false=パターン固定方向)
 input ENUM_TIMEFRAMES TrendMA_Timeframe = PERIOD_W1;  // 上位足時間軸
 input int    TrendMA_Short_Period = 5;     // 短期MA期間
 input int    TrendMA_Long_Period  = 20;    // 長期MA期間
@@ -467,24 +468,35 @@ int OnInit()
       if(!g_pairs[i].enabled) continue;
 
       g_pairs[i].lastTrendBarTime = iTime(g_pairs[i].symbol, TrendMA_Timeframe, 0);
+      g_pairs[i].oldDirection = 0;
 
-      int trendDir = GetConfirmedTrendDirection(i);
-      if(trendDir != 0)
+      if(TrendFollow_Enabled)
       {
-         g_pairs[i].swapDirection = trendDir;
-         PrintFormat("[TrendNanpinV2 INFO][Pat%s][%s] 初期トレンド: %s (MA%d/MA%d クロス確認済)",
-                    g_patternNames[g_pairs[i].patternIndex],
-                    g_pairs[i].symbol,
-                    (trendDir == 1) ? "BUY" : "SELL",
-                    TrendMA_Short_Period, TrendMA_Long_Period);
+         int trendDir = GetConfirmedTrendDirection(i);
+         if(trendDir != 0)
+         {
+            g_pairs[i].swapDirection = trendDir;
+            PrintFormat("[TrendNanpinV2 INFO][Pat%s][%s] 初期トレンド: %s (MA%d/MA%d クロス確認済)",
+                       g_patternNames[g_pairs[i].patternIndex],
+                       g_pairs[i].symbol,
+                       (trendDir == 1) ? "BUY" : "SELL",
+                       TrendMA_Short_Period, TrendMA_Long_Period);
+         }
+         else
+         {
+            int crossDir = GetCrossDirection(i, 1);
+            if(crossDir != 0)
+               g_pairs[i].swapDirection = crossDir;
+            PrintFormat("[TrendNanpinV2 INFO][Pat%s][%s] 初期トレンド: %s (確認本数不足→クロス方向で開始)",
+                       g_patternNames[g_pairs[i].patternIndex],
+                       g_pairs[i].symbol,
+                       (g_pairs[i].swapDirection == 1) ? "BUY" : "SELL");
+         }
       }
       else
       {
-         // 確認本数不足時はクロス方向だけで判定
-         int crossDir = GetCrossDirection(i, 1);
-         if(crossDir != 0)
-            g_pairs[i].swapDirection = crossDir;
-         PrintFormat("[TrendNanpinV2 INFO][Pat%s][%s] 初期トレンド: %s (確認本数不足→クロス方向で開始)",
+         // 固定方向モード: パターン定義のswapDirectionをそのまま使用
+         PrintFormat("[TrendNanpinV2 INFO][Pat%s][%s] 固定方向モード: %s",
                     g_patternNames[g_pairs[i].patternIndex],
                     g_pairs[i].symbol,
                     (g_pairs[i].swapDirection == 1) ? "BUY" : "SELL");
@@ -546,7 +558,7 @@ void OnTick()
       if(MaxDrawdownPercent > 0)
          if(CheckMaxDrawdown(i)) continue;  // 損切り実行した場合は次のペアへ
 
-      if(!g_pairs[i].windingDown)
+      if(TrendFollow_Enabled && !g_pairs[i].windingDown)
          CheckTrendReversal(i);
 
       // 日次利確チェック

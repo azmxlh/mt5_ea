@@ -76,8 +76,15 @@ input int    TrendMA_Long_Period  = 20;    // 長期MA期間
 input int    TrendConfirmBars    = 2;      // クロス維持確認本数
 
 // --- エントリー用MA設定 ---
-input int    MA_Period           = 100;
+input int    MA_Period           = 50;
 input ENUM_TIMEFRAMES MA_Timeframe = PERIOD_H4;
+
+// --- エントリー品質向上設定 ---
+input bool   PullbackEntry_Enabled = true;  // プルバックエントリー (true=MA回帰時のみエントリー)
+input int    PullbackLookback      = 5;     // プルバック判定: 過去N本以内にMAの逆側にいたか
+input bool   TrendStrength_Enabled = true;  // トレンド強度フィルター (true=MA傾き判定)
+input double TrendSlope_MinPips    = 3.0;   // MA傾き最低pips (過去N本での変化量)
+input int    TrendSlope_Bars       = 10;    // MA傾き計算期間 (本数)
 
 // --- ナンピン設定 ---
 input int    Nanpin_Pips         = 50;
@@ -348,6 +355,12 @@ int OnInit()
    { Print("[TrendNanpinV2 ERROR] AdaptiveTP_MinPips は正の値が必要"); return(INIT_PARAMETERS_INCORRECT); }
    if(AdaptiveTP_Enabled && AdaptiveTP_MaxPips < AdaptiveTP_MinPips)
    { Print("[TrendNanpinV2 ERROR] AdaptiveTP_MaxPips >= AdaptiveTP_MinPips が必要"); return(INIT_PARAMETERS_INCORRECT); }
+   if(PullbackEntry_Enabled && PullbackLookback <= 0)
+   { Print("[TrendNanpinV2 ERROR] PullbackLookback は正の値が必要"); return(INIT_PARAMETERS_INCORRECT); }
+   if(TrendStrength_Enabled && TrendSlope_Bars <= 0)
+   { Print("[TrendNanpinV2 ERROR] TrendSlope_Bars は正の値が必要"); return(INIT_PARAMETERS_INCORRECT); }
+   if(TrendStrength_Enabled && TrendSlope_MinPips <= 0)
+   { Print("[TrendNanpinV2 ERROR] TrendSlope_MinPips は正の値が必要"); return(INIT_PARAMETERS_INCORRECT); }
 
    g_activePairCount = 0;
 
@@ -579,6 +592,9 @@ int OnInit()
               AdaptiveTP_Enabled ? StringFormat("ATR×%.1f(%d-%dpips)", AdaptiveTP_Multiplier, AdaptiveTP_MinPips, AdaptiveTP_MaxPips)
                                 : StringFormat("%dpips固定", Profit_Pips),
               CompoundMode ? StringFormat("ON(%.0f円/%.2fLot)", BalancePerLot, BaseLots) : "OFF");
+   PrintFormat("[TrendNanpinV2 INFO] エントリー品質: Pullback=%s(過去%d本), TrendStrength=%s(傾き%.1fpips/%d本)",
+              PullbackEntry_Enabled ? "ON" : "OFF", PullbackLookback,
+              TrendStrength_Enabled ? "ON" : "OFF", TrendSlope_MinPips, TrendSlope_Bars);
    return(INIT_SUCCEEDED);
 }
 
@@ -699,21 +715,82 @@ double GetExistingLot(int idx)
 }
 
 //--- IsTrendAligned ---
+// エントリー条件: (1)価格がMAの正しい側, (2)プルバック確認, (3)トレンド強度
 bool IsTrendAligned(int idx)
 {
+   int barsNeeded = MathMax(PullbackLookback + 1, TrendSlope_Bars + 1);
+   barsNeeded = MathMax(barsNeeded, 2);
+
    double maBuffer[];
    ArraySetAsSeries(maBuffer, true);
-   if(CopyBuffer(g_pairs[idx].maHandle, 0, 0, 1, maBuffer) <= 0)
+   if(CopyBuffer(g_pairs[idx].maHandle, 0, 0, barsNeeded, maBuffer) <= 0)
       return false;
 
    double ma = maBuffer[0];
    string symbol = g_pairs[idx].symbol;
    double currentPrice = (SymbolInfoDouble(symbol, SYMBOL_ASK) + SymbolInfoDouble(symbol, SYMBOL_BID)) / 2.0;
 
+   // (1) 基本条件: 価格がMAの正しい側にあるか
    if(g_pairs[idx].swapDirection == 1)
-      return (currentPrice > ma);
+   {
+      if(currentPrice <= ma) return false;
+   }
    else
-      return (currentPrice < ma);
+   {
+      if(currentPrice >= ma) return false;
+   }
+
+   // (2) プルバックエントリー: 過去N本以内にMAの逆側にいた（＝MAをクロスしてきた）
+   if(PullbackEntry_Enabled)
+   {
+      bool hadPullback = false;
+      for(int i = 1; i <= PullbackLookback && i < barsNeeded; i++)
+      {
+         double pastClose = iClose(symbol, MA_Timeframe, i);
+         if(pastClose == 0) continue;
+
+         if(g_pairs[idx].swapDirection == 1)
+         {
+            // BUY: 過去にMAより下にいた = プルバックがあった
+            if(pastClose < maBuffer[i])
+            {
+               hadPullback = true;
+               break;
+            }
+         }
+         else
+         {
+            // SELL: 過去にMAより上にいた = プルバックがあった
+            if(pastClose > maBuffer[i])
+            {
+               hadPullback = true;
+               break;
+            }
+         }
+      }
+      if(!hadPullback) return false;
+   }
+
+   // (3) トレンド強度フィルター: MAの傾きが最低pips以上
+   if(TrendStrength_Enabled)
+   {
+      if(TrendSlope_Bars >= barsNeeded) return true; // データ不足の場合はスキップ
+
+      double maSlope = (maBuffer[0] - maBuffer[TrendSlope_Bars]) / g_pairs[idx].pip;
+
+      if(g_pairs[idx].swapDirection == 1)
+      {
+         // BUY: MAが上昇している必要あり
+         if(maSlope < TrendSlope_MinPips) return false;
+      }
+      else
+      {
+         // SELL: MAが下降している必要あり (slopeが負)
+         if(maSlope > -TrendSlope_MinPips) return false;
+      }
+   }
+
+   return true;
 }
 
 //--- IsNewBar ---

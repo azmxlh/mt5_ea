@@ -75,7 +75,7 @@ input ENUM_TIMEFRAMES MA_Timeframe = PERIOD_H4;
 // --- ナンピン設定 ---
 input int    Nanpin_Pips         = 50;
 input int    Max_Nanpin          = 0;      // 0=無制限
-input double Lot_Multiplier      = 2.0;
+input double Lot_Multiplier      = 1.0;
 
 // --- 決済設定 ---
 input int    Profit_Pips         = 30;
@@ -89,6 +89,7 @@ input int    DailyClose_MinPips  = 5;      // 決済に必要な最低利益 (pi
 // --- リスク管理 ---
 input double MaxDrawdownPercent  = 0;      // 最大含み損率で損切り (残高の%, 0=無効)
 input double NanpinPause_Percent = 0;      // 全体含み損率でナンピン停止 (残高の%, 0=無効)
+input bool   HedgeMode           = false;  // 両建てモード (true=転換時損切りせず両建て)
 input double MaxSpread           = 5.0;
 input int    TradingStartHour    = 0;
 input int    TradingEndHour      = 0;
@@ -106,6 +107,7 @@ struct PairState {
    int      trendMaShortHandle;
    int      trendMaLongHandle;
    int      swapDirection;
+   int      oldDirection;       // 両建てモード: 旧ポジション方向 (0=なし)
    int      nanpinCount;
    double   lastEntryPrice;
    datetime lastBarTime;
@@ -215,10 +217,22 @@ void CheckTrendReversal(int idx)
    int posCount = CountPositions(idx);
    if(posCount > 0)
    {
-      PrintFormat("[TrendNanpinV2 INFO][Pat%s][%s] トレンド転換による損切り: %dポジション",
-                 g_patternNames[g_pairs[idx].patternIndex],
-                 g_pairs[idx].symbol, posCount);
-      CloseAllPositions(idx);
+      if(HedgeMode)
+      {
+         g_pairs[idx].oldDirection = oldDirection;
+         PrintFormat("[TrendNanpinV2 INFO][Pat%s][%s] 両建てモード: 旧%sポジション保持、新%s方向開始",
+                    g_patternNames[g_pairs[idx].patternIndex],
+                    g_pairs[idx].symbol,
+                    (oldDirection == 1) ? "BUY" : "SELL",
+                    (confirmedDir == 1) ? "BUY" : "SELL");
+      }
+      else
+      {
+         PrintFormat("[TrendNanpinV2 INFO][Pat%s][%s] トレンド転換による損切り: %dポジション",
+                    g_patternNames[g_pairs[idx].patternIndex],
+                    g_pairs[idx].symbol, posCount);
+         CloseAllPositions(idx);
+      }
    }
 
    if(!IsSpreadOK(idx))
@@ -961,26 +975,117 @@ void CheckBatchClose(int idx)
 {
    if(CountPositions(idx) == 0) return;
 
-   double avgPrice = CalcAveragePrice(idx);
-   if(avgPrice <= 0) return;
-
    string symbol = g_pairs[idx].symbol;
    double pip = g_pairs[idx].pip;
-   bool closeCondition = false;
 
-   if(g_pairs[idx].swapDirection == 1)
+   // 現在方向のポジション利確チェック
+   double avgPrice = CalcAveragePriceByDir(idx, g_pairs[idx].swapDirection);
+   if(avgPrice > 0)
    {
-      double currentBid = SymbolInfoDouble(symbol, SYMBOL_BID);
-      closeCondition = (currentBid >= avgPrice + Profit_Pips * pip);
-   }
-   else
-   {
-      double currentAsk = SymbolInfoDouble(symbol, SYMBOL_ASK);
-      closeCondition = (currentAsk <= avgPrice - Profit_Pips * pip);
+      bool closeCondition = false;
+      if(g_pairs[idx].swapDirection == 1)
+      {
+         double currentBid = SymbolInfoDouble(symbol, SYMBOL_BID);
+         closeCondition = (currentBid >= avgPrice + Profit_Pips * pip);
+      }
+      else
+      {
+         double currentAsk = SymbolInfoDouble(symbol, SYMBOL_ASK);
+         closeCondition = (currentAsk <= avgPrice - Profit_Pips * pip);
+      }
+      if(closeCondition)
+         ClosePositionsByDir(idx, g_pairs[idx].swapDirection);
    }
 
-   if(closeCondition)
-      CloseAllPositions(idx);
+   // 両建てモード: 旧方向ポジションの利確チェック
+   if(HedgeMode && g_pairs[idx].oldDirection != 0)
+   {
+      double oldAvgPrice = CalcAveragePriceByDir(idx, g_pairs[idx].oldDirection);
+      if(oldAvgPrice > 0)
+      {
+         bool oldCloseCondition = false;
+         if(g_pairs[idx].oldDirection == 1)
+         {
+            double currentBid = SymbolInfoDouble(symbol, SYMBOL_BID);
+            oldCloseCondition = (currentBid >= oldAvgPrice + Profit_Pips * pip);
+         }
+         else
+         {
+            double currentAsk = SymbolInfoDouble(symbol, SYMBOL_ASK);
+            oldCloseCondition = (currentAsk <= oldAvgPrice - Profit_Pips * pip);
+         }
+         if(oldCloseCondition)
+         {
+            ClosePositionsByDir(idx, g_pairs[idx].oldDirection);
+            g_pairs[idx].oldDirection = 0;
+            PrintFormat("[TrendNanpinV2 INFO][Pat%s][%s] 旧方向ポジション利確完了",
+                       g_patternNames[g_pairs[idx].patternIndex], symbol);
+         }
+      }
+      else
+      {
+         g_pairs[idx].oldDirection = 0;
+      }
+   }
+}
+
+//--- CalcAveragePriceByDir ---
+double CalcAveragePriceByDir(int idx, int direction)
+{
+   int magic = g_pairs[idx].magicNumber;
+   string symbol = g_pairs[idx].symbol;
+   double totalLots = 0, totalWeighted = 0;
+   ENUM_POSITION_TYPE targetType = (direction == 1) ? POSITION_TYPE_BUY : POSITION_TYPE_SELL;
+
+   int total = PositionsTotal();
+   for(int i = 0; i < total; i++)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != magic) continue;
+      if(PositionGetString(POSITION_SYMBOL) != symbol) continue;
+      if((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) != targetType) continue;
+
+      double posLots  = PositionGetDouble(POSITION_VOLUME);
+      double posPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+      totalLots     += posLots;
+      totalWeighted += posPrice * posLots;
+   }
+   if(totalLots <= 0) return 0.0;
+   return totalWeighted / totalLots;
+}
+
+//--- ClosePositionsByDir ---
+void ClosePositionsByDir(int idx, int direction)
+{
+   int magic = g_pairs[idx].magicNumber;
+   string symbol = g_pairs[idx].symbol;
+   int closed = 0;
+   double totalProfit = 0;
+   ENUM_POSITION_TYPE targetType = (direction == 1) ? POSITION_TYPE_BUY : POSITION_TYPE_SELL;
+
+   g_trade.SetExpertMagicNumber(magic);
+
+   int total = PositionsTotal();
+   for(int i = total - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != magic) continue;
+      if(PositionGetString(POSITION_SYMBOL) != symbol) continue;
+      if((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) != targetType) continue;
+
+      totalProfit += PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
+      if(g_trade.PositionClose(ticket))
+         closed++;
+   }
+
+   if(closed > 0)
+   {
+      PrintFormat("[TrendNanpinV2 INFO][Pat%s][%s] %s方向決済: %dポジション, 損益 %.0f",
+                 g_patternNames[g_pairs[idx].patternIndex],
+                 symbol, (direction == 1) ? "BUY" : "SELL", closed, totalProfit);
+   }
 }
 
 //--- CloseAllPositions ---

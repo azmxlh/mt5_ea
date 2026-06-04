@@ -40,7 +40,7 @@ input double Lots               = 0.01;
 input bool   SinglePairMode     = false;
 
 // --- 複利設定 ---
-input bool   CompoundMode       = false;   // 複利モード (true=有効)
+input bool   CompoundMode       = true;    // 複利モード (true=有効)
 input double BalancePerLot      = 100000;  // 1ロット単位あたりの必要残高 (円)
 input double BaseLots           = 0.01;    // 複利計算の基準ロット
 
@@ -63,7 +63,7 @@ input ENUM_TIMEFRAMES MA_Timeframe = PERIOD_H4;
 // --- ナンピン設定 ---
 input int    Nanpin_Pips         = 50;
 input int    Max_Nanpin          = 0;      // 0=無制限
-input double Lot_Multiplier      = 1.0;
+input double Lot_Multiplier      = 2.0;
 
 // --- 決済設定 ---
 input int    Profit_Pips         = 30;

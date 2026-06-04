@@ -63,9 +63,9 @@ input bool   EnablePattern_C    = true;
 input bool   EnablePattern_D    = true;
 
 // --- 上位足トレンド設定（MAクロス + N本確認） ---
-input ENUM_TIMEFRAMES TrendMA_Timeframe = PERIOD_W1;  // 上位足時間軸
-input int    TrendMA_Short_Period = 5;     // 短期MA期間
-input int    TrendMA_Long_Period  = 20;    // 長期MA期間
+input ENUM_TIMEFRAMES TrendMA_Timeframe = PERIOD_D1;  // 上位足時間軸
+input int    TrendMA_Short_Period = 10;    // 短期MA期間
+input int    TrendMA_Long_Period  = 40;    // 長期MA期間
 input int    TrendConfirmBars    = 2;      // クロス維持確認本数
 
 // --- エントリー用MA設定 ---

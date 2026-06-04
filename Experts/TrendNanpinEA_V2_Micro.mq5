@@ -77,6 +77,9 @@ input ENUM_TIMEFRAMES MA_Timeframe = PERIOD_H4;
 input int    Nanpin_Pips         = 50;
 input int    Max_Nanpin          = 0;      // 0=無制限
 input double Lot_Multiplier      = 1.0;
+input bool   AdaptiveNanpin_Enabled = false; // ATRベース適応ナンピン幅
+input int    ATR_Period          = 14;     // ATR計算期間
+input ENUM_TIMEFRAMES ATR_Timeframe = PERIOD_D1; // ATR計算時間軸
 
 // --- 決済設定 ---
 input int    Profit_Pips         = 30;
@@ -109,6 +112,7 @@ struct PairState {
    int      maHandle;
    int      trendMaShortHandle;
    int      trendMaLongHandle;
+   int      atrHandle;
    int      swapDirection;
    int      oldDirection;       // 両建てモード: 旧ポジション方向 (0=なし)
    int      nanpinCount;
@@ -449,6 +453,17 @@ int OnInit()
          PrintFormat("[TrendNanpinV2 ERROR] トレンド長期MA作成失敗: %s", g_pairs[i].symbol);
          return(INIT_FAILED);
       }
+
+      g_pairs[i].atrHandle = INVALID_HANDLE;
+      if(AdaptiveNanpin_Enabled)
+      {
+         g_pairs[i].atrHandle = iATR(g_pairs[i].symbol, ATR_Timeframe, ATR_Period);
+         if(g_pairs[i].atrHandle == INVALID_HANDLE)
+         {
+            PrintFormat("[TrendNanpinV2 ERROR] ATR作成失敗: %s", g_pairs[i].symbol);
+            return(INIT_FAILED);
+         }
+      }
    }
 
    // 初期トレンド方向を設定
@@ -531,6 +546,8 @@ void OnDeinit(const int reason)
          IndicatorRelease(g_pairs[i].trendMaShortHandle);
       if(g_pairs[i].trendMaLongHandle != INVALID_HANDLE)
          IndicatorRelease(g_pairs[i].trendMaLongHandle);
+      if(g_pairs[i].atrHandle != INVALID_HANDLE)
+         IndicatorRelease(g_pairs[i].atrHandle);
    }
    PrintFormat("[TrendNanpinV2 INFO] EA停止: reason=%d", reason);
 }
@@ -696,6 +713,25 @@ void CheckEntry(int idx)
       PrintFormat("[TrendNanpinV2 ERROR][%s] 注文失敗: err=%d", symbol, GetLastError());
 }
 
+//--- GetAdaptiveNanpinPips ---
+double GetAdaptiveNanpinPips(int idx)
+{
+   if(!AdaptiveNanpin_Enabled || g_pairs[idx].atrHandle == INVALID_HANDLE)
+      return Nanpin_Pips;
+
+   double atrBuffer[];
+   ArraySetAsSeries(atrBuffer, true);
+   if(CopyBuffer(g_pairs[idx].atrHandle, 0, 1, 1, atrBuffer) <= 0)
+      return Nanpin_Pips;
+
+   double atrPips = atrBuffer[0] / g_pairs[idx].pip;
+
+   if(atrPips > Nanpin_Pips)
+      return atrPips;
+
+   return Nanpin_Pips;
+}
+
 //--- CheckNanpin ---
 void CheckNanpin(int idx)
 {
@@ -708,17 +744,18 @@ void CheckNanpin(int idx)
    string symbol = g_pairs[idx].symbol;
    double pip = g_pairs[idx].pip;
    double lastPrice = g_pairs[idx].lastEntryPrice;
+   double nanpinPips = GetAdaptiveNanpinPips(idx);
 
    bool nanpinTrigger = false;
    if(g_pairs[idx].swapDirection == 1)
    {
       double currentAsk = SymbolInfoDouble(symbol, SYMBOL_ASK);
-      nanpinTrigger = (lastPrice - currentAsk >= Nanpin_Pips * pip);
+      nanpinTrigger = (lastPrice - currentAsk >= nanpinPips * pip);
    }
    else
    {
       double currentBid = SymbolInfoDouble(symbol, SYMBOL_BID);
-      nanpinTrigger = (currentBid - lastPrice >= Nanpin_Pips * pip);
+      nanpinTrigger = (currentBid - lastPrice >= nanpinPips * pip);
    }
    if(!nanpinTrigger) return;
 
@@ -758,17 +795,18 @@ void CheckNanpinWithLot(int idx, double baseLot)
    string symbol = g_pairs[idx].symbol;
    double pip = g_pairs[idx].pip;
    double lastPrice = g_pairs[idx].lastEntryPrice;
+   double nanpinPips = GetAdaptiveNanpinPips(idx);
 
    bool nanpinTrigger = false;
    if(g_pairs[idx].swapDirection == 1)
    {
       double currentAsk = SymbolInfoDouble(symbol, SYMBOL_ASK);
-      nanpinTrigger = (lastPrice - currentAsk >= Nanpin_Pips * pip);
+      nanpinTrigger = (lastPrice - currentAsk >= nanpinPips * pip);
    }
    else
    {
       double currentBid = SymbolInfoDouble(symbol, SYMBOL_BID);
-      nanpinTrigger = (currentBid - lastPrice >= Nanpin_Pips * pip);
+      nanpinTrigger = (currentBid - lastPrice >= nanpinPips * pip);
    }
    if(!nanpinTrigger) return;
 

@@ -44,6 +44,18 @@ input bool   CompoundMode       = true;    // 複利モード (true=有効)
 input double BalancePerLot      = 100000;  // 1ロット単位あたりの必要残高 (円)
 input double BaseLots           = 0.01;    // 複利計算の基準ロット
 
+// --- ロットスケール設定（残高に応じてBalancePerLotに倍率適用） ---
+input double LotScale_Balance1  = 0;       // 段階1: 残高閾値 (0=無効)
+input double LotScale_Rate1     = 1.0;     // 段階1: BalancePerLot倍率
+input double LotScale_Balance2  = 0;       // 段階2: 残高閾値 (0=無効)
+input double LotScale_Rate2     = 1.0;     // 段階2: BalancePerLot倍率
+input double LotScale_Balance3  = 0;       // 段階3: 残高閾値 (0=無効)
+input double LotScale_Rate3     = 1.0;     // 段階3: BalancePerLot倍率
+input double LotScale_Balance4  = 0;       // 段階4: 残高閾値 (0=無効)
+input double LotScale_Rate4     = 1.0;     // 段階4: BalancePerLot倍率
+input double LotScale_Balance5  = 0;       // 段階5: 残高閾値 (0=無効)
+input double LotScale_Rate5     = 1.0;     // 段階5: BalancePerLot倍率
+
 // --- パターン有効/無効 ---
 input bool   EnablePattern_A    = true;
 input bool   EnablePattern_B    = true;
@@ -763,7 +775,20 @@ double CalcCompoundLots(string symbol)
       return Lots;
 
    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
-   double rawLots = MathFloor(balance / BalancePerLot) * BaseLots;
+
+   // ロットスケール: 残高に応じてBalancePerLotに倍率を適用
+   double scaledBalancePerLot = BalancePerLot;
+   double scaleBalances[5] = {LotScale_Balance1, LotScale_Balance2, LotScale_Balance3, LotScale_Balance4, LotScale_Balance5};
+   double scaleRates[5]    = {LotScale_Rate1, LotScale_Rate2, LotScale_Rate3, LotScale_Rate4, LotScale_Rate5};
+
+   for(int i = 0; i < 5; i++)
+   {
+      if(scaleBalances[i] <= 0) continue;       // 無効な段階はスキップ
+      if(balance >= scaleBalances[i])
+         scaledBalancePerLot = BalancePerLot * scaleRates[i];
+   }
+
+   double rawLots = MathFloor(balance / scaledBalancePerLot) * BaseLots;
 
    double minLot  = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
    double maxLot  = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);

@@ -47,8 +47,9 @@ input bool   SinglePairMode     = false;
 
 // --- 複利設定 ---
 input bool   CompoundMode       = true;    // 複利モード (true=有効)
-input double BalancePerLot      = 500000;  // 1ロット単位あたりの必要残高 (円)
+input double BalancePerLot      = 1000000;  // 1ロット単位あたりの必要残高 (円)
 input double BaseLots           = 0.01;    // 複利計算の基準ロット
+input double CompoundMaxLot     = 0.5;       // 複利ロット上限 (0=無制限, 到達後は固定)
 
 // --- ロットスケール設定（残高に応じてBalancePerLotに倍率適用） ---
 input double LotScale_Balance1  = 0;       // 段階1: 残高閾値 (0=無効)
@@ -63,7 +64,7 @@ input double LotScale_Balance5  = 0;       // 段階5: 残高閾値 (0=無効)
 input double LotScale_Rate5     = 1.0;     // 段階5: BalancePerLot倍率
 
 // --- 複利逓減設定（利益が出るほどロットを抑える） ---
-input bool   Decay_Enabled      = true;   // 複利逓減 (true=有効)
+input bool   Decay_Enabled      = false;   // 複利逓減 (true=有効)
 input double Decay_Step         = 500000;  // この金額増えるごとに倍率を下げる (円)
 input double Decay_Reduce       = 0.2;     // 1段階ごとに下げる倍率 (例:0.2→1.0,0.8,0.6...)
 input double Decay_MinMulti     = 0.4;     // 最低倍率（これ以下にはならない）
@@ -80,7 +81,7 @@ input bool   TrendFollow_Enabled  = false; // トレンド追従モード (false
 input ENUM_TIMEFRAMES TrendMA_Timeframe = PERIOD_W1;  // 上位足時間軸
 input int    TrendMA_Short_Period = 5;     // 短期MA期間
 input int    TrendMA_Long_Period  = 20;    // 長期MA期間
-input int    TrendConfirmBars    = 2;      // クロス維持確認本数
+input int    TrendConfirmBars    = 4;      // クロス維持確認本数
 
 // --- エントリー用MA設定 ---
 input int    MA_Period           = 50;
@@ -95,13 +96,26 @@ input int    TrendSlope_Bars       = 10;    // MA傾き計算期間 (本数)
 
 // --- ナンピン設定 ---
 input int    Nanpin_Pips            = 50;
-input double Nanpin_Pips_Multiplier = 40.0;   // ナンピン幅倍率 (1.0=固定幅, 2.0=2倍ずつ拡大)
+input double Nanpin_Pips_Multiplier = 100.0;   // ナンピン幅倍率 (1.0=固定幅, 2.0=2倍ずつ拡大)
 input int    Max_Nanpin             = 0;      // 0=無制限
-input double NanpinLot_Multiplier   = 40.0;   // ナンピン初回ロット倍率 (例: 5.0=初回5倍ロット)
+input double NanpinLot_Multiplier   = 100.0;   // ナンピン初回ロット倍率 (例: 5.0=初回5倍ロット)
 input double Lot_Multiplier         = 1.0;   // ナンピンロット増加倍率 (例: 2.0=毎回2倍)
 input bool   AdaptiveNanpin_Enabled = true;  // ATRベース適応ナンピン幅
 input int    ATR_Period             = 14;     // ATR計算期間
 input ENUM_TIMEFRAMES ATR_Timeframe = PERIOD_D1; // ATR計算時間軸
+
+// --- ナンピン反発確認設定 ---
+input bool   NanpinConfirm_Enabled  = true;   // ナンピン反発確認 (true=反発確認後にナンピン)
+input ENUM_TIMEFRAMES NanpinConfirm_TF = PERIOD_H1;  // 反発確認の時間軸
+input int    NanpinConfirm_MA_Period = 10;    // 反発確認用MA期間
+input int    NanpinConfirm_Bars     = 3;      // MA反転確認本数 (連続N本MAが戻り方向)
+input bool   NanpinConfirm_PriceCross = true; // 反発確認: 価格がMA超えも要求
+
+// --- ナンピン上位足トレンドガード設定 ---
+input bool   NanpinTrendGuard_Enabled = true;   // ナンピン上位足ガード (上位足トレンドと逆ならナンピン禁止)
+input ENUM_TIMEFRAMES NanpinTrendGuard_TF = PERIOD_D1;  // ガード判定時間軸
+input int    NanpinTrendGuard_MA_Period = 20;    // ガード用MA期間
+input bool   NanpinTrendGuard_PriceCheck = true; // ガード: 価格がMAの逆側ならナンピン禁止
 
 // --- 決済設定 ---
 input int    Profit_Pips         = 30;
@@ -113,11 +127,11 @@ input int    AdaptiveTP_MinPips    = 10;     // 最低利確pips（下限）
 input int    AdaptiveTP_MaxPips    = 100;    // 最大利確pips（上限）
 
 // --- 日次決済設定 ---
-input bool   DailyClose_Enabled  = true;   // 日次利確決済 (true=有効)
+input bool   DailyClose_Enabled  = false;   // 日次利確決済 (true=有効)
 input int    DailyClose_Hour     = 23;     // 決済判定時刻（時）サーバー時間
 input int    DailyClose_Minute   = 50;     // 決済判定時刻（分）サーバー時間
 input int    DailyClose_MinPips  = 5;      // 決済に必要な最低利益 (pips)
-input bool   EarlyClose_Enabled  = true;   // 早期利確 (true=ポジション数条件で時間外も利確)
+input bool   EarlyClose_Enabled  = false;   // 早期利確 (true=ポジション数条件で時間外も利確)
 input int    EarlyClose_MinPositions = 3;  // 早期利確に必要な最低ポジション数
 
 // --- リスク管理 ---
@@ -141,6 +155,8 @@ struct PairState {
    int      trendMaShortHandle; // 上位足短期MA
    int      trendMaLongHandle;  // 上位足長期MA
    int      atrHandle;          // ATRハンドル
+   int      nanpinConfirmHandle; // ナンピン反発確認用MA
+   int      nanpinTrendGuardHandle; // ナンピン上位足トレンドガード用MA
    int      swapDirection;      // +1=BUY, -1=SELL
    int      oldDirection;       // 両建てモード: 旧ポジション方向 (0=なし)
    int      nanpinCount;
@@ -148,6 +164,8 @@ struct PairState {
    datetime lastBarTime;
    datetime lastTrendBarTime;
    datetime lastDailyCloseDate; // 日次決済実行済み日付
+   bool     nanpinWaiting;      // ナンピン待機中フラグ (幅到達→反発待ち)
+   double   nanpinWaitPrice;    // ナンピン待機開始時の価格
 };
 
 PairState g_pairs[MAX_PAIRS];
@@ -303,6 +321,8 @@ void CheckTrendReversal(int idx)
       double entryPrice = g_trade.ResultPrice();
       g_pairs[idx].nanpinCount    = 0;
       g_pairs[idx].lastEntryPrice = entryPrice;
+      g_pairs[idx].nanpinWaiting  = false;
+      g_pairs[idx].nanpinWaitPrice = 0;
       PrintFormat("[TrendNanpinV2 INFO][Pat%s][%s] トレンド転換後エントリー: %s %.2f lots @ %s",
                  g_patternNames[g_pairs[idx].patternIndex],
                  symbol, (confirmedDir == 1) ? "BUY" : "SELL",
@@ -375,6 +395,12 @@ int OnInit()
    { Print("[TrendNanpinV2 ERROR] TrendSlope_Bars は正の値が必要"); return(INIT_PARAMETERS_INCORRECT); }
    if(TrendStrength_Enabled && TrendSlope_MinPips <= 0)
    { Print("[TrendNanpinV2 ERROR] TrendSlope_MinPips は正の値が必要"); return(INIT_PARAMETERS_INCORRECT); }
+   if(NanpinConfirm_Enabled && NanpinConfirm_MA_Period <= 0)
+   { Print("[TrendNanpinV2 ERROR] NanpinConfirm_MA_Period は正の値が必要"); return(INIT_PARAMETERS_INCORRECT); }
+   if(NanpinConfirm_Enabled && NanpinConfirm_Bars < 1)
+   { Print("[TrendNanpinV2 ERROR] NanpinConfirm_Bars は1以上が必要"); return(INIT_PARAMETERS_INCORRECT); }
+   if(NanpinTrendGuard_Enabled && NanpinTrendGuard_MA_Period <= 0)
+   { Print("[TrendNanpinV2 ERROR] NanpinTrendGuard_MA_Period は正の値が必要"); return(INIT_PARAMETERS_INCORRECT); }
 
    g_activePairCount = 0;
 
@@ -402,11 +428,15 @@ int OnInit()
             g_pairs[idx].maHandle         = INVALID_HANDLE;
             g_pairs[idx].trendMaShortHandle = INVALID_HANDLE;
             g_pairs[idx].trendMaLongHandle  = INVALID_HANDLE;
+            g_pairs[idx].nanpinConfirmHandle = INVALID_HANDLE;
+            g_pairs[idx].nanpinTrendGuardHandle = INVALID_HANDLE;
             g_pairs[idx].nanpinCount      = 0;
             g_pairs[idx].lastEntryPrice   = 0;
             g_pairs[idx].lastBarTime      = 0;
             g_pairs[idx].lastTrendBarTime = 0;
             g_pairs[idx].lastDailyCloseDate = 0;
+            g_pairs[idx].nanpinWaiting    = false;
+            g_pairs[idx].nanpinWaitPrice  = 0;
             g_activePairCount++;
          }
          else
@@ -426,11 +456,15 @@ int OnInit()
                g_pairs[idx].maHandle         = INVALID_HANDLE;
                g_pairs[idx].trendMaShortHandle = INVALID_HANDLE;
                g_pairs[idx].trendMaLongHandle  = INVALID_HANDLE;
+               g_pairs[idx].nanpinConfirmHandle = INVALID_HANDLE;
+               g_pairs[idx].nanpinTrendGuardHandle = INVALID_HANDLE;
                g_pairs[idx].nanpinCount      = 0;
                g_pairs[idx].lastEntryPrice   = 0;
                g_pairs[idx].lastBarTime      = 0;
                g_pairs[idx].lastTrendBarTime = 0;
                g_pairs[idx].lastDailyCloseDate = 0;
+               g_pairs[idx].nanpinWaiting    = false;
+               g_pairs[idx].nanpinWaitPrice  = 0;
                g_activePairCount++;
                PrintFormat("[TrendNanpinV2 INFO][Pat%s][%s] パターンOFF - 既存ポジション決済待ち",
                           g_patternNames[pat], sym);
@@ -470,11 +504,15 @@ int OnInit()
       g_pairs[0].maHandle           = INVALID_HANDLE;
       g_pairs[0].trendMaShortHandle = INVALID_HANDLE;
       g_pairs[0].trendMaLongHandle  = INVALID_HANDLE;
+      g_pairs[0].nanpinConfirmHandle = INVALID_HANDLE;
+      g_pairs[0].nanpinTrendGuardHandle = INVALID_HANDLE;
       g_pairs[0].nanpinCount        = 0;
       g_pairs[0].lastEntryPrice     = 0;
       g_pairs[0].lastBarTime        = 0;
       g_pairs[0].lastTrendBarTime   = 0;
       g_pairs[0].lastDailyCloseDate = 0;
+      g_pairs[0].nanpinWaiting      = false;
+      g_pairs[0].nanpinWaitPrice    = 0;
       g_activePairCount = 1;
       PrintFormat("[TrendNanpinV2 INFO] シングルペアモード: %s (パターン%s)",
                  chartSymbol, g_patternNames[g_pairs[0].patternIndex]);
@@ -532,6 +570,30 @@ int OnInit()
          if(g_pairs[i].atrHandle == INVALID_HANDLE)
          {
             PrintFormat("[TrendNanpinV2 ERROR] ATR作成失敗: %s", g_pairs[i].symbol);
+            return(INIT_FAILED);
+         }
+      }
+
+      // ナンピン反発確認用MAハンドル作成
+      g_pairs[i].nanpinConfirmHandle = INVALID_HANDLE;
+      if(NanpinConfirm_Enabled)
+      {
+         g_pairs[i].nanpinConfirmHandle = iMA(g_pairs[i].symbol, NanpinConfirm_TF, NanpinConfirm_MA_Period, 0, MODE_SMA, PRICE_CLOSE);
+         if(g_pairs[i].nanpinConfirmHandle == INVALID_HANDLE)
+         {
+            PrintFormat("[TrendNanpinV2 ERROR] ナンピン確認用MA作成失敗: %s", g_pairs[i].symbol);
+            return(INIT_FAILED);
+         }
+      }
+
+      // ナンピン上位足トレンドガード用MAハンドル作成
+      g_pairs[i].nanpinTrendGuardHandle = INVALID_HANDLE;
+      if(NanpinTrendGuard_Enabled)
+      {
+         g_pairs[i].nanpinTrendGuardHandle = iMA(g_pairs[i].symbol, NanpinTrendGuard_TF, NanpinTrendGuard_MA_Period, 0, MODE_SMA, PRICE_CLOSE);
+         if(g_pairs[i].nanpinTrendGuardHandle == INVALID_HANDLE)
+         {
+            PrintFormat("[TrendNanpinV2 ERROR] ナンピンガード用MA作成失敗: %s", g_pairs[i].symbol);
             return(INIT_FAILED);
          }
       }
@@ -620,6 +682,14 @@ int OnInit()
    PrintFormat("[TrendNanpinV2 INFO] エントリー品質: Pullback=%s(過去%d本), TrendStrength=%s(傾き%.1fpips/%d本)",
               PullbackEntry_Enabled ? "ON" : "OFF", PullbackLookback,
               TrendStrength_Enabled ? "ON" : "OFF", TrendSlope_MinPips, TrendSlope_Bars);
+   PrintFormat("[TrendNanpinV2 INFO] ナンピン反発確認: %s (TF=%s, MA%d, 連続%d本, 価格クロス=%s)",
+              NanpinConfirm_Enabled ? "ON" : "OFF",
+              EnumToString(NanpinConfirm_TF), NanpinConfirm_MA_Period, NanpinConfirm_Bars,
+              NanpinConfirm_PriceCross ? "ON" : "OFF");
+   PrintFormat("[TrendNanpinV2 INFO] ナンピン上位足ガード: %s (TF=%s, MA%d, 価格位置=%s)",
+              NanpinTrendGuard_Enabled ? "ON" : "OFF",
+              EnumToString(NanpinTrendGuard_TF), NanpinTrendGuard_MA_Period,
+              NanpinTrendGuard_PriceCheck ? "ON" : "OFF");
    if(Decay_Enabled && CompoundMode)
       PrintFormat("[TrendNanpinV2 INFO] 複利逓減: 基準残高=%.0f ステップ=%.0f 減少幅=%.2f 最低倍率=%.2f",
                  g_initialBalance, Decay_Step, Decay_Reduce, Decay_MinMulti);
@@ -639,6 +709,10 @@ void OnDeinit(const int reason)
          IndicatorRelease(g_pairs[i].trendMaLongHandle);
       if(g_pairs[i].atrHandle != INVALID_HANDLE)
          IndicatorRelease(g_pairs[i].atrHandle);
+      if(g_pairs[i].nanpinConfirmHandle != INVALID_HANDLE)
+         IndicatorRelease(g_pairs[i].nanpinConfirmHandle);
+      if(g_pairs[i].nanpinTrendGuardHandle != INVALID_HANDLE)
+         IndicatorRelease(g_pairs[i].nanpinTrendGuardHandle);
    }
    PrintFormat("[TrendNanpinV2 INFO] EA停止: reason=%d", reason);
 }
@@ -821,6 +895,134 @@ bool IsTrendAligned(int idx)
    return true;
 }
 
+//--- IsNanpinReversalConfirmed ---
+// ナンピン反発確認: 短期MAがN本連続でポジション方向に傾いているか
+// BUYの場合: MAが上昇（MA[1] > MA[2] > ... > MA[N]）= 反発開始
+// SELLの場合: MAが下降（MA[1] < MA[2] < ... < MA[N]）= 反発開始
+bool IsNanpinReversalConfirmed(int idx)
+{
+   if(!NanpinConfirm_Enabled) return true;  // 無効時は常にtrue
+   if(g_pairs[idx].nanpinConfirmHandle == INVALID_HANDLE) return true;
+
+   int barsNeeded = NanpinConfirm_Bars + 1;
+   double maBuffer[];
+   ArraySetAsSeries(maBuffer, true);
+
+   if(CopyBuffer(g_pairs[idx].nanpinConfirmHandle, 0, 1, barsNeeded, maBuffer) < barsNeeded)
+      return false;  // データ不足→発注しない
+
+   // 確定足(shift=1)からNanpinConfirm_Bars本分チェック
+   // BUY: MAが連続して上昇していること（MA[0] > MA[1] > MA[2]...）
+   // SELL: MAが連続して下降していること（MA[0] < MA[1] < MA[2]...）
+   for(int i = 0; i < NanpinConfirm_Bars; i++)
+   {
+      if(g_pairs[idx].swapDirection == 1)
+      {
+         // BUY方向: 新しいMAが古いMAより高い = 反発上昇中
+         if(maBuffer[i] <= maBuffer[i + 1]) return false;
+      }
+      else
+      {
+         // SELL方向: 新しいMAが古いMAより低い = 反発下降中
+         if(maBuffer[i] >= maBuffer[i + 1]) return false;
+      }
+   }
+
+   // 価格がMA超え確認（有効時）
+   if(NanpinConfirm_PriceCross)
+   {
+      string symbol = g_pairs[idx].symbol;
+      double currentPrice = (SymbolInfoDouble(symbol, SYMBOL_ASK) + SymbolInfoDouble(symbol, SYMBOL_BID)) / 2.0;
+      double latestMA = maBuffer[0];  // 最新確定足のMA値
+
+      if(g_pairs[idx].swapDirection == 1)
+      {
+         // BUY: 価格がMAの上にいること（反発してMAを上抜けた）
+         if(currentPrice <= latestMA) return false;
+      }
+      else
+      {
+         // SELL: 価格がMAの下にいること（反発してMAを下抜けた）
+         if(currentPrice >= latestMA) return false;
+      }
+   }
+
+   return true;  // N本連続で反発方向に動いている + 価格がMA超え
+}
+
+//--- IsNanpinTrendGuardOK ---
+// 上位足トレンドガード: 上位足MAの傾きがポジション方向と一致しているかチェック
+// + 価格がMAの逆側にいないかチェック
+// 一致しない（上位足が逆方向）ならfalse → ナンピン禁止
+bool IsNanpinTrendGuardOK(int idx)
+{
+   if(!NanpinTrendGuard_Enabled) return true;  // 無効時は常にOK
+   if(g_pairs[idx].nanpinTrendGuardHandle == INVALID_HANDLE) return true;
+
+   double maBuffer[];
+   ArraySetAsSeries(maBuffer, true);
+
+   // 直近3本のMAを取得して傾きを判定
+   if(CopyBuffer(g_pairs[idx].nanpinTrendGuardHandle, 0, 1, 3, maBuffer) < 3)
+      return false;  // データ不足→ナンピンしない（安全側）
+
+   // MA[0]が最新確定足、MA[2]が3本前
+   // 上昇: MA[0] > MA[2]、下降: MA[0] < MA[2]
+   double maSlope = maBuffer[0] - maBuffer[2];
+
+   if(g_pairs[idx].swapDirection == 1)
+   {
+      // BUYポジション: 上位足MAが上向きなら OK
+      if(maSlope <= 0)
+      {
+         PrintFormat("[TrendNanpinV2 INFO][Pat%s][%s] ナンピンガード発動: 上位足MA下向き (BUYポジションと逆)",
+                    g_patternNames[g_pairs[idx].patternIndex], g_pairs[idx].symbol);
+         return false;
+      }
+   }
+   else
+   {
+      // SELLポジション: 上位足MAが下向きなら OK
+      if(maSlope >= 0)
+      {
+         PrintFormat("[TrendNanpinV2 INFO][Pat%s][%s] ナンピンガード発動: 上位足MA上向き (SELLポジションと逆)",
+                    g_patternNames[g_pairs[idx].patternIndex], g_pairs[idx].symbol);
+         return false;
+      }
+   }
+
+   // 価格位置チェック: 価格がガードMAの逆側にいたらナンピン禁止
+   if(NanpinTrendGuard_PriceCheck)
+   {
+      string symbol = g_pairs[idx].symbol;
+      double currentPrice = (SymbolInfoDouble(symbol, SYMBOL_ASK) + SymbolInfoDouble(symbol, SYMBOL_BID)) / 2.0;
+      double latestMA = maBuffer[0];  // 最新確定足のMA値
+
+      if(g_pairs[idx].swapDirection == 1)
+      {
+         // BUYポジション: 価格がMAの下にいる = まだ反発してない = 危険
+         if(currentPrice < latestMA)
+         {
+            PrintFormat("[TrendNanpinV2 INFO][Pat%s][%s] ナンピンガード発動: 価格が上位足MA下 (BUYポジションと逆側)",
+                       g_patternNames[g_pairs[idx].patternIndex], symbol);
+            return false;
+         }
+      }
+      else
+      {
+         // SELLポジション: 価格がMAの上にいる = 逆方向に行ってる = 危険
+         if(currentPrice > latestMA)
+         {
+            PrintFormat("[TrendNanpinV2 INFO][Pat%s][%s] ナンピンガード発動: 価格が上位足MA上 (SELLポジションと逆側)",
+                       g_patternNames[g_pairs[idx].patternIndex], symbol);
+            return false;
+         }
+      }
+   }
+
+   return true;  // 上位足トレンドとポジション方向が一致 & 価格位置OK
+}
+
 //--- IsNewBar ---
 bool IsNewBar(int idx)
 {
@@ -928,6 +1130,7 @@ void CheckNanpin(int idx)
    double lastPrice = g_pairs[idx].lastEntryPrice;
    double nanpinPips = GetAdaptiveNanpinPips(idx, g_pairs[idx].nanpinCount);
 
+   // --- ナンピン幅チェック ---
    bool nanpinTrigger = false;
    if(g_pairs[idx].swapDirection == 1)
    {
@@ -939,8 +1142,62 @@ void CheckNanpin(int idx)
       double currentBid = SymbolInfoDouble(symbol, SYMBOL_BID);
       nanpinTrigger = (currentBid - lastPrice >= nanpinPips * pip);
    }
-   if(!nanpinTrigger) return;
 
+   // --- 上位足トレンドガード ---
+   if(nanpinTrigger && !IsNanpinTrendGuardOK(idx)) return;  // 上位足が逆方向ならナンピン禁止
+
+   // --- 2段階判定: 幅到達 → 待機 → 反発確認 → 発注 ---
+   if(NanpinConfirm_Enabled)
+   {
+      if(!g_pairs[idx].nanpinWaiting)
+      {
+         // まだ待機状態でない: 幅に到達したら待機開始
+         if(!nanpinTrigger) return;
+
+         g_pairs[idx].nanpinWaiting = true;
+         double waitPrice = (g_pairs[idx].swapDirection == 1)
+                            ? SymbolInfoDouble(symbol, SYMBOL_ASK)
+                            : SymbolInfoDouble(symbol, SYMBOL_BID);
+         g_pairs[idx].nanpinWaitPrice = waitPrice;
+         PrintFormat("[TrendNanpinV2 INFO][Pat%s][%s] ナンピン待機開始 (反発確認待ち) @ %s",
+                    g_patternNames[g_pairs[idx].patternIndex],
+                    symbol, DoubleToString(waitPrice, g_pairs[idx].digits));
+         return;
+      }
+      else
+      {
+         // 待機中: 反発確認チェック
+         // ただし待機中も上位足ガード再チェック
+         if(!IsNanpinTrendGuardOK(idx))
+         {
+            // 待機中にトレンドが逆転した → 待機解除（もうナンピンすべきでない）
+            g_pairs[idx].nanpinWaiting = false;
+            g_pairs[idx].nanpinWaitPrice = 0;
+            return;
+         }
+
+         if(nanpinTrigger)
+         {
+            // まだ条件内にいる（幅は満たしている）→ 反発確認
+            if(!IsNanpinReversalConfirmed(idx)) return;  // 反発未確認 → 待ち継続
+            // 反発確認OK → 発注へ進む
+         }
+         else
+         {
+            // 価格が戻ってナンピン幅を満たさなくなった → 待機解除（反発で戻った）
+            g_pairs[idx].nanpinWaiting = false;
+            g_pairs[idx].nanpinWaitPrice = 0;
+            return;
+         }
+      }
+   }
+   else
+   {
+      // 反発確認無効: 従来通り幅到達で即発注（ガードは上で既にチェック済み）
+      if(!nanpinTrigger) return;
+   }
+
+   // --- 発注 ---
    double lots = CalcNanpinLots(g_pairs[idx].nanpinCount, symbol);
    g_trade.SetExpertMagicNumber(g_pairs[idx].magicNumber);
 
@@ -955,7 +1212,9 @@ void CheckNanpin(int idx)
       double entryPrice = g_trade.ResultPrice();
       g_pairs[idx].nanpinCount++;
       g_pairs[idx].lastEntryPrice = entryPrice;
-      PrintFormat("[TrendNanpinV2 INFO][Pat%s][%s] ナンピン #%d: %s %.2f lots @ %s",
+      g_pairs[idx].nanpinWaiting = false;
+      g_pairs[idx].nanpinWaitPrice = 0;
+      PrintFormat("[TrendNanpinV2 INFO][Pat%s][%s] ナンピン #%d (反発確認済): %s %.2f lots @ %s",
                  g_patternNames[g_pairs[idx].patternIndex],
                  symbol, g_pairs[idx].nanpinCount,
                  (g_pairs[idx].swapDirection == 1) ? "BUY" : "SELL",
@@ -979,6 +1238,7 @@ void CheckNanpinWithLot(int idx, double baseLot)
    double lastPrice = g_pairs[idx].lastEntryPrice;
    double nanpinPips = GetAdaptiveNanpinPips(idx, g_pairs[idx].nanpinCount);
 
+   // --- ナンピン幅チェック ---
    bool nanpinTrigger = false;
    if(g_pairs[idx].swapDirection == 1)
    {
@@ -990,8 +1250,55 @@ void CheckNanpinWithLot(int idx, double baseLot)
       double currentBid = SymbolInfoDouble(symbol, SYMBOL_BID);
       nanpinTrigger = (currentBid - lastPrice >= nanpinPips * pip);
    }
-   if(!nanpinTrigger) return;
 
+   // --- 上位足トレンドガード ---
+   if(nanpinTrigger && !IsNanpinTrendGuardOK(idx)) return;  // 上位足が逆方向ならナンピン禁止
+
+   // --- 2段階判定: 幅到達 → 待機 → 反発確認 → 発注 ---
+   if(NanpinConfirm_Enabled)
+   {
+      if(!g_pairs[idx].nanpinWaiting)
+      {
+         if(!nanpinTrigger) return;
+
+         g_pairs[idx].nanpinWaiting = true;
+         double waitPrice = (g_pairs[idx].swapDirection == 1)
+                            ? SymbolInfoDouble(symbol, SYMBOL_ASK)
+                            : SymbolInfoDouble(symbol, SYMBOL_BID);
+         g_pairs[idx].nanpinWaitPrice = waitPrice;
+         PrintFormat("[TrendNanpinV2 INFO][Pat%s][%s] ナンピン待機開始(旧ロット) (反発確認待ち) @ %s",
+                    g_patternNames[g_pairs[idx].patternIndex],
+                    symbol, DoubleToString(waitPrice, g_pairs[idx].digits));
+         return;
+      }
+      else
+      {
+         // 待機中もトレンドガード再チェック
+         if(!IsNanpinTrendGuardOK(idx))
+         {
+            g_pairs[idx].nanpinWaiting = false;
+            g_pairs[idx].nanpinWaitPrice = 0;
+            return;
+         }
+
+         if(nanpinTrigger)
+         {
+            if(!IsNanpinReversalConfirmed(idx)) return;
+         }
+         else
+         {
+            g_pairs[idx].nanpinWaiting = false;
+            g_pairs[idx].nanpinWaitPrice = 0;
+            return;
+         }
+      }
+   }
+   else
+   {
+      if(!nanpinTrigger) return;
+   }
+
+   // --- 発注 ---
    double lots = baseLot * NanpinLot_Multiplier * MathPow(MathMax(Lot_Multiplier, 0.01), g_pairs[idx].nanpinCount);
    g_trade.SetExpertMagicNumber(g_pairs[idx].magicNumber);
 
@@ -1006,7 +1313,9 @@ void CheckNanpinWithLot(int idx, double baseLot)
       double entryPrice = g_trade.ResultPrice();
       g_pairs[idx].nanpinCount++;
       g_pairs[idx].lastEntryPrice = entryPrice;
-      PrintFormat("[TrendNanpinV2 INFO][Pat%s][%s] ナンピン(旧ロット) #%d: %s %.2f lots @ %s",
+      g_pairs[idx].nanpinWaiting = false;
+      g_pairs[idx].nanpinWaitPrice = 0;
+      PrintFormat("[TrendNanpinV2 INFO][Pat%s][%s] ナンピン(旧ロット,反発確認済) #%d: %s %.2f lots @ %s",
                  g_patternNames[g_pairs[idx].patternIndex],
                  symbol, g_pairs[idx].nanpinCount,
                  (g_pairs[idx].swapDirection == 1) ? "BUY" : "SELL",
@@ -1052,6 +1361,10 @@ double CalcCompoundLots(string symbol)
          rawLots = rawLots * multiplier;
       }
    }
+
+   // 複利ロット上限: 到達後は固定
+   if(CompoundMaxLot > 0 && rawLots > CompoundMaxLot)
+      rawLots = CompoundMaxLot;
 
    double minLot  = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
    double maxLot  = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
@@ -1432,6 +1745,8 @@ void CloseAllPositions(int idx)
    {
       g_pairs[idx].nanpinCount    = 0;
       g_pairs[idx].lastEntryPrice = 0;
+      g_pairs[idx].nanpinWaiting  = false;
+      g_pairs[idx].nanpinWaitPrice = 0;
       PrintFormat("[TrendNanpinV2 INFO][Pat%s][%s] 一括決済: %dポジション, 損益 %.0f",
                  g_patternNames[g_pairs[idx].patternIndex],
                  symbol, closed, totalProfit);

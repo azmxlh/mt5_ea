@@ -63,6 +63,10 @@ input int      MaxHoldDays       = 0;           // 0=無制限
 //--- 許可口座
 input string   AllowedAccounts   = "75545335,70643523,75548484,370394526";
 
+//--- ポジション数制限・再エントリー抑制
+input int      MaxTotalPositions  = 0;           // 全ペア合計の最大同時ポジション数 (0=無制限)
+input int      ReentryCooldown    = 60;          // 決済後の再エントリー抑制時間（分）(0=無効)
+
 //--- 内部変数
 string pairs[];
 int    pairCount;
@@ -71,6 +75,7 @@ int    handleRSI[];
 int    handleATR[];
 bool   pairEnabled[];       // ペアが有効かどうか
 double initialBalance = 0;  // 初回残高記録用
+datetime lastCloseTime[];   // 各ペアの直近決済時刻
 
 //+------------------------------------------------------------------+
 int OnInit()
@@ -92,6 +97,8 @@ int OnInit()
    ArrayResize(handleRSI, pairCount);
    ArrayResize(handleATR, pairCount);
    ArrayResize(pairEnabled, pairCount);
+   ArrayResize(lastCloseTime, pairCount);
+   ArrayInitialize(lastCloseTime, 0);
 
    int enabledCount = 0;
    for(int i = 0; i < pairCount; i++) {
@@ -166,13 +173,13 @@ void OnTick()
       string sym = pairs[i];
 
       // 日次強制決済
-      if(ForceClose_Enabled) CheckForceClose(sym, magic);
+      if(ForceClose_Enabled) CheckForceClose(sym, magic, i);
 
       // 日次損失チェック
       if(MaxDailyLoss_Percent > 0 && IsDailyLossExceeded()) continue;
 
       // 最大保有日数チェック
-      if(MaxHoldDays > 0) CheckMaxHoldDays(sym, magic);
+      if(MaxHoldDays > 0) CheckMaxHoldDays(sym, magic, i);
 
       // 利確チェック
       CheckTakeProfit(sym, magic, i);
@@ -181,6 +188,14 @@ void OnTick()
       if(CountPositions(sym, magic) > 0) {
          CheckNanpin(sym, magic, i);
          continue;
+      }
+
+      // 最大同時ポジション数チェック（全ペア合計）
+      if(MaxTotalPositions > 0 && CountAllPositions() >= MaxTotalPositions) continue;
+
+      // 決済後クールダウンチェック
+      if(ReentryCooldown > 0 && lastCloseTime[i] > 0) {
+         if(TimeCurrent() - lastCloseTime[i] < ReentryCooldown * 60) continue;
       }
 
       // 新規エントリー
@@ -349,13 +364,16 @@ void CheckTakeProfit(string sym, int magic, int idx)
       }
    }
 
-   if(doClose) CloseAllPositions(sym, magic);
+   if(doClose) {
+      CloseAllPositions(sym, magic);
+      lastCloseTime[idx] = TimeCurrent();
+   }
 }
 
 //+------------------------------------------------------------------+
 // 最大保有日数チェック
 //+------------------------------------------------------------------+
-void CheckMaxHoldDays(string sym, int magic)
+void CheckMaxHoldDays(string sym, int magic, int idx)
 {
    for(int i = PositionsTotal() - 1; i >= 0; i--) {
       ulong ticket = PositionGetTicket(i);
@@ -368,6 +386,7 @@ void CheckMaxHoldDays(string sym, int magic)
 
       if(holdDays >= MaxHoldDays) {
          CloseAllPositions(sym, magic);
+         lastCloseTime[idx] = TimeCurrent();
          PrintFormat("[MaxHold] %s %d日経過 → 全決済", sym, holdDays);
          break;
       }
@@ -377,13 +396,14 @@ void CheckMaxHoldDays(string sym, int magic)
 //+------------------------------------------------------------------+
 // 日次強制決済
 //+------------------------------------------------------------------+
-void CheckForceClose(string sym, int magic)
+void CheckForceClose(string sym, int magic, int idx)
 {
    MqlDateTime dt;
    TimeCurrent(dt);
    if(dt.hour == ForceClose_Hour && dt.min >= ForceClose_Minute) {
       if(CountPositions(sym, magic) > 0) {
          CloseAllPositions(sym, magic);
+         lastCloseTime[idx] = TimeCurrent();
       }
    }
 }
@@ -400,7 +420,7 @@ bool IsDailyLossExceeded()
 }
 
 //+------------------------------------------------------------------+
-// ポジション数取得
+// ポジション数取得（特定ペア）
 //+------------------------------------------------------------------+
 int CountPositions(string sym, int magic)
 {
@@ -410,6 +430,23 @@ int CountPositions(string sym, int magic)
       if(ticket == 0) continue;
       if(PositionGetString(POSITION_SYMBOL) != sym) continue;
       if(PositionGetInteger(POSITION_MAGIC) != magic) continue;
+      count++;
+   }
+   return count;
+}
+
+//+------------------------------------------------------------------+
+// ポジション数取得（全ペア合計・このEAのマジックナンバー範囲のみ）
+//+------------------------------------------------------------------+
+int CountAllPositions()
+{
+   int count = 0;
+   int magicMax = MagicBase + pairCount - 1;
+   for(int i = PositionsTotal() - 1; i >= 0; i--) {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0) continue;
+      long mg = PositionGetInteger(POSITION_MAGIC);
+      if(mg < MagicBase || mg > magicMax) continue;
       count++;
    }
    return count;

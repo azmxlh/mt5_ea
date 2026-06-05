@@ -47,7 +47,7 @@ input bool   SinglePairMode     = false;
 
 // --- 複利設定 ---
 input bool   CompoundMode       = true;    // 複利モード (true=有効)
-input double BalancePerLot      = 100000;  // 1ロット単位あたりの必要残高 (円)
+input double BalancePerLot      = 200000;  // 1ロット単位あたりの必要残高 (円)
 input double BaseLots           = 0.01;    // 複利計算の基準ロット
 
 // --- ロットスケール設定（残高に応じてBalancePerLotに倍率適用） ---
@@ -95,9 +95,9 @@ input int    TrendSlope_Bars       = 10;    // MA傾き計算期間 (本数)
 
 // --- ナンピン設定 ---
 input int    Nanpin_Pips            = 50;
-input double Nanpin_Pips_Multiplier = 15.0;   // ナンピン幅倍率 (1.0=固定幅, 2.0=2倍ずつ拡大)
+input double Nanpin_Pips_Multiplier = 40.0;   // ナンピン幅倍率 (1.0=固定幅, 2.0=2倍ずつ拡大)
 input int    Max_Nanpin             = 0;      // 0=無制限
-input double NanpinLot_Multiplier   = 15.0;   // ナンピン初回ロット倍率 (例: 5.0=初回5倍ロット)
+input double NanpinLot_Multiplier   = 40.0;   // ナンピン初回ロット倍率 (例: 5.0=初回5倍ロット)
 input double Lot_Multiplier         = 1.0;   // ナンピンロット増加倍率 (例: 2.0=毎回2倍)
 input bool   AdaptiveNanpin_Enabled = true;  // ATRベース適応ナンピン幅
 input int    ATR_Period             = 14;     // ATR計算期間

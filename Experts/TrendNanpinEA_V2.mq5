@@ -62,6 +62,13 @@ input double LotScale_Rate4     = 1.0;     // 段階4: BalancePerLot倍率
 input double LotScale_Balance5  = 0;       // 段階5: 残高閾値 (0=無効)
 input double LotScale_Rate5     = 1.0;     // 段階5: BalancePerLot倍率
 
+// --- 複利逓減設定（利益が出るほどロットを抑える） ---
+input bool   Decay_Enabled      = false;   // 複利逓減 (true=有効)
+input double Decay_Step         = 500000;  // この金額増えるごとに倍率を下げる (円)
+input double Decay_Reduce       = 0.2;     // 1段階ごとに下げる倍率 (例:0.2→1.0,0.8,0.6...)
+input double Decay_MinMulti     = 0.4;     // 最低倍率（これ以下にはならない）
+input double Decay_BaseBalance  = 3000000;       // 基準残高 (0=起動時の残高を自動使用)
+
 // --- パターン有効/無効 ---
 input bool   EnablePattern_A    = true;
 input bool   EnablePattern_B    = true;
@@ -146,6 +153,7 @@ struct PairState {
 PairState g_pairs[MAX_PAIRS];
 CTrade    g_trade;
 int       g_activePairCount;
+double    g_initialBalance;  // 複利逓減用: 基準残高
 
 //--- パターン有効フラグ取得 ---
 bool IsPatternEnabled(int patIdx)
@@ -571,6 +579,13 @@ int OnInit()
    }
 
    g_trade.SetDeviationInPoints(10);
+
+   // 複利逓減: 基準残高を設定
+   if(Decay_BaseBalance > 0)
+      g_initialBalance = Decay_BaseBalance;
+   else
+      g_initialBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+
    RestoreStateFromPositions();
 
    for(int i = 0; i < g_activePairCount; i++)
@@ -605,6 +620,9 @@ int OnInit()
    PrintFormat("[TrendNanpinV2 INFO] エントリー品質: Pullback=%s(過去%d本), TrendStrength=%s(傾き%.1fpips/%d本)",
               PullbackEntry_Enabled ? "ON" : "OFF", PullbackLookback,
               TrendStrength_Enabled ? "ON" : "OFF", TrendSlope_MinPips, TrendSlope_Bars);
+   if(Decay_Enabled && CompoundMode)
+      PrintFormat("[TrendNanpinV2 INFO] 複利逓減: 基準残高=%.0f ステップ=%.0f 減少幅=%.2f 最低倍率=%.2f",
+                 g_initialBalance, Decay_Step, Decay_Reduce, Decay_MinMulti);
    return(INIT_SUCCEEDED);
 }
 
@@ -1019,6 +1037,21 @@ double CalcCompoundLots(string symbol)
    }
 
    double rawLots = MathFloor(balance / scaledBalancePerLot) * BaseLots;
+
+   // 複利逓減: 残高が基準からステップ分増えるごとに倍率を下げる
+   if(Decay_Enabled && Decay_Step > 0)
+   {
+      double baseBalance = (g_initialBalance > 0) ? g_initialBalance : balance;
+      double growth = balance - baseBalance;
+
+      if(growth > 0)
+      {
+         int steps = (int)MathFloor(growth / Decay_Step);
+         double multiplier = 1.0 - (steps * Decay_Reduce);
+         multiplier = MathMax(multiplier, Decay_MinMulti);
+         rawLots = rawLots * multiplier;
+      }
+   }
 
    double minLot  = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
    double maxLot  = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);

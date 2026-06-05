@@ -32,7 +32,7 @@ input ENUM_TIMEFRAMES BB_TF      = PERIOD_M15;
 
 //--- RSI設定
 input int      RSI_Period        = 14;
-input int      RSI_OB           = 60;
+input int      RSI_OB           = 70;
 input int      RSI_OS           = 30;
 input ENUM_TIMEFRAMES RSI_TF     = PERIOD_M15;
 
@@ -64,7 +64,7 @@ input int      MaxHoldDays       = 0;           // 0=無制限
 input string   AllowedAccounts   = "75545335,70643523,75548484,370394526";
 
 //--- ポジション数制限・再エントリー抑制
-input int      MaxTotalPositions  = 0;           // 全ペア合計の最大同時ポジション数 (0=無制限)
+input int      MaxTotalPositions  = 6;           // 全ペア合計の最大同時ポジション数 (0=無制限)
 input int      ReentryCooldown    = 60;          // 決済後の再エントリー抑制時間（分）(0=無効)
 
 //--- 内部変数

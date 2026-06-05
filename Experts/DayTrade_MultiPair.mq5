@@ -20,10 +20,10 @@ input bool     MicroMode         = false;
 
 //--- ロットスケール設定（残高に応じてBalancePerLotに倍率適用）
 input bool     Decay_Enabled     = true;         // 複利逓減を有効化
-input double   Decay_Step        = 5000000;      // この金額増えるごとに倍率を下げる（例:500万）
+input double   Decay_Step        = 500000;      // この金額増えるごとに倍率を下げる（例:500万）
 input double   Decay_Reduce      = 0.2;          // 1段階ごとに下げる倍率（例:0.2→1.0,0.8,0.6...）
 input double   Decay_MinMulti    = 0.4;          // 最低倍率（これ以下にはならない）
-input double   Decay_BaseBalance = 10000000.0;   // 基準残高（0=起動時の残高を自動使用）
+input double   Decay_BaseBalance = 1000000.0;   // 基準残高（0=起動時の残高を自動使用）
 
 //--- BB設定
 input int      BB_Period         = 20;

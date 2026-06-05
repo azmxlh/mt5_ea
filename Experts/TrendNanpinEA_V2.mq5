@@ -87,11 +87,13 @@ input double TrendSlope_MinPips    = 3.0;   // MA傾き最低pips (過去N本で
 input int    TrendSlope_Bars       = 10;    // MA傾き計算期間 (本数)
 
 // --- ナンピン設定 ---
-input int    Nanpin_Pips         = 50;
-input int    Max_Nanpin          = 0;      // 0=無制限
-input double Lot_Multiplier      = 1.0;
+input int    Nanpin_Pips            = 50;
+input double Nanpin_Pips_Multiplier = 15.0;   // ナンピン幅倍率 (1.0=固定幅, 2.0=2倍ずつ拡大)
+input int    Max_Nanpin             = 0;      // 0=無制限
+input double NanpinLot_Multiplier   = 15.0;   // ナンピン初回ロット倍率 (例: 5.0=初回5倍ロット)
+input double Lot_Multiplier         = 1.0;   // ナンピンロット増加倍率 (例: 2.0=毎回2倍)
 input bool   AdaptiveNanpin_Enabled = true;  // ATRベース適応ナンピン幅
-input int    ATR_Period          = 14;     // ATR計算期間
+input int    ATR_Period             = 14;     // ATR計算期間
 input ENUM_TIMEFRAMES ATR_Timeframe = PERIOD_D1; // ATR計算時間軸
 
 // --- 決済設定 ---
@@ -333,6 +335,10 @@ int OnInit()
    { Print("[TrendNanpinV2 ERROR] Lots は正の値が必要"); return(INIT_PARAMETERS_INCORRECT); }
    if(Nanpin_Pips <= 0)
    { Print("[TrendNanpinV2 ERROR] Nanpin_Pips は正の値が必要"); return(INIT_PARAMETERS_INCORRECT); }
+   if(Nanpin_Pips_Multiplier <= 0)
+   { Print("[TrendNanpinV2 ERROR] Nanpin_Pips_Multiplier は正の値が必要"); return(INIT_PARAMETERS_INCORRECT); }
+   if(NanpinLot_Multiplier <= 0)
+   { Print("[TrendNanpinV2 ERROR] NanpinLot_Multiplier は正の値が必要"); return(INIT_PARAMETERS_INCORRECT); }
    if(Profit_Pips <= 0)
    { Print("[TrendNanpinV2 ERROR] Profit_Pips は正の値が必要"); return(INIT_PARAMETERS_INCORRECT); }
    if(Max_Nanpin < 0)
@@ -585,10 +591,14 @@ int OnInit()
          enabledPatterns += g_patternNames[pat];
       }
    }
-   PrintFormat("[TrendNanpinV2 INFO] 初期化完了: パターン=[%s], TrendMA=%d/%d(%s)確認%d本, EntryMA=%d(%s), Nanpin=%dpips, Profit=%s, 複利=%s",
+   PrintFormat("[TrendNanpinV2 INFO] 初期化完了: パターン=[%s], TrendMA=%d/%d(%s)確認%d本, EntryMA=%d(%s), Nanpin=%s, Lot=%s, Profit=%s, 複利=%s",
               enabledPatterns, TrendMA_Short_Period, TrendMA_Long_Period,
               EnumToString(TrendMA_Timeframe), TrendConfirmBars,
-              MA_Period, EnumToString(MA_Timeframe), Nanpin_Pips,
+              MA_Period, EnumToString(MA_Timeframe),
+              AdaptiveNanpin_Enabled
+                 ? StringFormat("ATR適応(基準%dpips×%.1f倍)", Nanpin_Pips, Nanpin_Pips_Multiplier)
+                 : StringFormat("%dpips×%.1f倍", Nanpin_Pips, Nanpin_Pips_Multiplier),
+              StringFormat("初回%.1f倍→×%.1f倍", NanpinLot_Multiplier, Lot_Multiplier),
               AdaptiveTP_Enabled ? StringFormat("ATR×%.1f(%d-%dpips)", AdaptiveTP_Multiplier, AdaptiveTP_MinPips, AdaptiveTP_MaxPips)
                                 : StringFormat("%dpips固定", Profit_Pips),
               CompoundMode ? StringFormat("ON(%.0f円/%.2fLot)", BalancePerLot, BaseLots) : "OFF");
@@ -839,24 +849,28 @@ void CheckEntry(int idx)
 
 //--- GetAdaptiveNanpinPips ---
 // ATRに基づくナンピン幅(pips)を返す。無効時はNanpin_Pipsをそのまま返す
-double GetAdaptiveNanpinPips(int idx)
+// nanpinCount: 現在のナンピン回数（0=これから1回目のナンピン）
+double GetAdaptiveNanpinPips(int idx, int nanpinCount = 0)
 {
+   // 基本幅: Nanpin_Pips × Nanpin_Pips_Multiplier ^ nanpinCount
+   double basePips = Nanpin_Pips * MathPow(MathMax(Nanpin_Pips_Multiplier, 0.01), nanpinCount);
+
    if(!AdaptiveNanpin_Enabled || g_pairs[idx].atrHandle == INVALID_HANDLE)
-      return Nanpin_Pips;
+      return basePips;
 
    double atrBuffer[];
    ArraySetAsSeries(atrBuffer, true);
    if(CopyBuffer(g_pairs[idx].atrHandle, 0, 1, 1, atrBuffer) <= 0)
-      return Nanpin_Pips;
+      return basePips;
 
    // ATRをpipsに変換
    double atrPips = atrBuffer[0] / g_pairs[idx].pip;
 
-   // ATRがNanpin_Pipsより大きければATRを使い、小さければNanpin_Pipsをそのまま使う
-   if(atrPips > Nanpin_Pips)
+   // ATRがbasePipsより大きければATRを使い、小さければbasePipsをそのまま使う
+   if(atrPips > basePips)
       return atrPips;
 
-   return Nanpin_Pips;
+   return basePips;
 }
 
 //--- GetAdaptiveProfitPips ---
@@ -894,7 +908,7 @@ void CheckNanpin(int idx)
    string symbol = g_pairs[idx].symbol;
    double pip = g_pairs[idx].pip;
    double lastPrice = g_pairs[idx].lastEntryPrice;
-   double nanpinPips = GetAdaptiveNanpinPips(idx);
+   double nanpinPips = GetAdaptiveNanpinPips(idx, g_pairs[idx].nanpinCount);
 
    bool nanpinTrigger = false;
    if(g_pairs[idx].swapDirection == 1)
@@ -945,7 +959,7 @@ void CheckNanpinWithLot(int idx, double baseLot)
    string symbol = g_pairs[idx].symbol;
    double pip = g_pairs[idx].pip;
    double lastPrice = g_pairs[idx].lastEntryPrice;
-   double nanpinPips = GetAdaptiveNanpinPips(idx);
+   double nanpinPips = GetAdaptiveNanpinPips(idx, g_pairs[idx].nanpinCount);
 
    bool nanpinTrigger = false;
    if(g_pairs[idx].swapDirection == 1)
@@ -960,7 +974,7 @@ void CheckNanpinWithLot(int idx, double baseLot)
    }
    if(!nanpinTrigger) return;
 
-   double lots = baseLot * MathPow(Lot_Multiplier, g_pairs[idx].nanpinCount + 1);
+   double lots = baseLot * NanpinLot_Multiplier * MathPow(MathMax(Lot_Multiplier, 0.01), g_pairs[idx].nanpinCount);
    g_trade.SetExpertMagicNumber(g_pairs[idx].magicNumber);
 
    bool result = false;
@@ -1023,7 +1037,11 @@ double CalcCompoundLots(string symbol)
 double CalcNanpinLots(int count, string symbol)
 {
    double baseLot = CalcCompoundLots(symbol);
-   return baseLot * MathPow(Lot_Multiplier, count + 1);
+   // NanpinLot_Multiplier で初回ナンピンのロット倍率を指定し、
+   // 以降 Lot_Multiplier で累乗していく
+   // 例: NanpinLot_Multiplier=5, Lot_Multiplier=2, count=0(1回目) → 5倍
+   //     count=1(2回目) → 5×2=10倍, count=2(3回目) → 5×2²=20倍
+   return baseLot * NanpinLot_Multiplier * MathPow(MathMax(Lot_Multiplier, 0.01), count);
 }
 
 //--- IsNanpinPaused ---

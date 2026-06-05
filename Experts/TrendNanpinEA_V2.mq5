@@ -47,7 +47,7 @@ input bool   SinglePairMode     = false;
 
 // --- 複利設定 ---
 input bool   CompoundMode       = true;    // 複利モード (true=有効)
-input double BalancePerLot      = 200000;  // 1ロット単位あたりの必要残高 (円)
+input double BalancePerLot      = 500000;  // 1ロット単位あたりの必要残高 (円)
 input double BaseLots           = 0.01;    // 複利計算の基準ロット
 
 // --- ロットスケール設定（残高に応じてBalancePerLotに倍率適用） ---

@@ -1,7 +1,7 @@
 //+------------------------------------------------------------------+
-//|                                      DayTrade_MultiPair.mq5       |
-//|              デイトレード（スイング）型 多通貨ペアEA               |
+//|                                    BBNanpin_MultiPair.mq5         |
 //|              BB逆張り + マーチンゲールナンピン + 複利              |
+//|              多通貨ペア対応スイングEA                              |
 //+------------------------------------------------------------------+
 #property copyright "AI Assistant"
 #property version   "5.00"
@@ -138,7 +138,7 @@ int OnInit()
       return INIT_FAILED;
    }
 
-   PrintFormat("DayTrade_MultiPair V5 初期化完了 有効ペア数=%d/%d 複利=%s", enabledCount, pairCount, CompoundMode ? "ON" : "OFF");
+   PrintFormat("BBNanpin_MultiPair V5 初期化完了 有効ペア数=%d/%d 複利=%s", enabledCount, pairCount, CompoundMode ? "ON" : "OFF");
 
    // 基準残高の設定
    if(Decay_BaseBalance > 0)
@@ -553,7 +553,7 @@ bool OpenOrder(string sym, ENUM_ORDER_TYPE type, double lot, int magic)
    req.price        = (type == ORDER_TYPE_BUY) ? SymbolInfoDouble(sym, SYMBOL_ASK) : SymbolInfoDouble(sym, SYMBOL_BID);
    req.deviation    = 30;
    req.magic        = magic;
-   req.comment      = "DT_MP_V5";
+   req.comment      = "BBNanpin_V5";
    req.type_filling = GetFillingMode(sym);
 
    if(!OrderSend(req, res)) {

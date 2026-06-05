@@ -63,7 +63,7 @@ input double LotScale_Balance5  = 0;       // 段階5: 残高閾値 (0=無効)
 input double LotScale_Rate5     = 1.0;     // 段階5: BalancePerLot倍率
 
 // --- 複利逓減設定（利益が出るほどロットを抑える） ---
-input bool   Decay_Enabled      = false;   // 複利逓減 (true=有効)
+input bool   Decay_Enabled      = true;   // 複利逓減 (true=有効)
 input double Decay_Step         = 500000;  // この金額増えるごとに倍率を下げる (円)
 input double Decay_Reduce       = 0.2;     // 1段階ごとに下げる倍率 (例:0.2→1.0,0.8,0.6...)
 input double Decay_MinMulti     = 0.4;     // 最低倍率（これ以下にはならない）

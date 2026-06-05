@@ -61,7 +61,7 @@ input double   MaxDailyLoss_Percent = 0;        // 0=無効
 input int      MaxHoldDays       = 0;           // 0=無制限
 
 //--- 許可口座
-input string   AllowedAccounts   = "75545335,70643523,75548484,370394526";
+input string   AllowedAccounts   = "75558238";
 
 //--- ポジション数制限・再エントリー抑制
 input int      MaxTotalPositions  = 6;           // 全ペア合計の最大同時ポジション数 (0=無制限)

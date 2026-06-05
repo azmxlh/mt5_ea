@@ -43,7 +43,7 @@ input ENUM_TIMEFRAMES ATR_TF     = PERIOD_H1;
 //--- ナンピン設定
 input double   Nanpin_ATR_Multi  = 20.0;         // ナンピン間隔（ATR倍率）※広めに
 input double   Nanpin_LotMulti   = 20.0;         // ロット倍率
-input int      Nanpin_MaxCount   = 1;           // 最大ナンピン回数
+input int      Nanpin_MaxCount   = 5;           // 最大ナンピン回数
 
 //--- 利確設定
 input double   TP_Pips           = 3.0;         // 平均建値+N pips

@@ -52,13 +52,13 @@ input double   LotHalving        = 0.5;         // ロット減少率(0.5=半減
 input int      MaxPyramid        = 0;           // 最大追加回数
 
 //--- SL管理設定
-input double   SL_Initial_ATR    = 1.0;         // 初期SL(ATR倍率) ※損切り
-input double   SL_BE_Even_ATR    = 0.5;         // 含み益がこれ超えたら建値保護開始(ATR倍率)
+input double   SL_Initial_ATR    = 2.0;         // 初期SL(ATR倍率) ※損切り
+input double   SL_BE_Even_ATR    = 1.5;         // 含み益がこれ超えたら建値保護開始(ATR倍率)
 input double   TrailingStop_ATR  = 0.8;         // 最高益からの許容戻し幅(ATR倍率) ※狭めて早めに利確
 input double   SL_Emergency_Pct  = 0;         // 緊急損切り(建値からの%幅) 0=無効
 
 //--- 利確設定
-input double   TP_ATR_Multi      = 0;           // 利確目標(ATR倍率) 0=無効(トレーリングのみ)
+input double   TP_ATR_Multi      = 2.0;           // 利確目標(ATR倍率) 0=無効(トレーリングのみ)
 input bool     TP_UseBBBand      = false;       // BB外バンド利確
 
 //--- リスク管理

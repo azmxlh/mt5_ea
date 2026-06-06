@@ -15,8 +15,8 @@ input int      MagicBase         = 77000;
 //--- 複利設定
 input bool     CompoundMode      = true;        // 複利モード
 input double   BalancePerLot     = 100000;      // 1ロット単位あたりの必要残高(円)
-input double   BaseLots          = 0.08;        // 複利計算の基準ロット
-input double   FixedLot          = 0.08;        // 固定ロット（複利OFF時）
+input double   BaseLots          = 0.1;        // 複利計算の基準ロット
+input double   FixedLot          = 0.1;        // 固定ロット（複利OFF時）
 input bool     MicroMode         = false;       // Microモード(true=最小0.1lot)
 
 //--- 複利逓減設定
@@ -52,9 +52,10 @@ input double   LotHalving        = 0.5;         // ロット減少率(0.5=半減
 input int      MaxPyramid        = 0;           // 最大追加回数
 
 //--- SL管理設定
-input double   SL_Initial_ATR    = 2.0;         // 初期SL(ATR倍率) ※損切り
+input double   SL_Initial_ATR    = 1.0;         // 初期SL(ATR倍率) ※損切り
 input double   SL_BE_Even_ATR    = 0.5;         // 含み益がこれ超えたら建値保護開始(ATR倍率)
 input double   TrailingStop_ATR  = 0.8;         // 最高益からの許容戻し幅(ATR倍率) ※狭めて早めに利確
+input double   SL_Emergency_Pct  = 0;         // 緊急損切り(建値からの%幅) 0=無効
 
 //--- 利確設定
 input double   TP_ATR_Multi      = 0;           // 利確目標(ATR倍率) 0=無効(トレーリングのみ)
@@ -540,12 +541,14 @@ void EmergencyCheck()
       else
          priceDiff = openPrice - curPrice;
 
-      // 損失が建値の2%を超えたら強制損切り（ATRに依存しないフォールバック）
-      double maxLoss = openPrice * 0.02;  // 2%
-      if(priceDiff <= -maxLoss) {
-         PrintFormat("[PyramidTrend EMERGENCY][%s] 強制損切り: ticket=%d, open=%.5f, cur=%.5f, loss=%.5f(limit=%.5f)",
-                    sym, ticket, openPrice, curPrice, priceDiff, -maxLoss);
-         ClosePosition(ticket, sym, (int)mg);
+      // 損失が建値の指定%を超えたら強制損切り（ATRに依存しないフォールバック）
+      if(SL_Emergency_Pct > 0) {
+         double maxLoss = openPrice * SL_Emergency_Pct / 100.0;
+         if(priceDiff <= -maxLoss) {
+            PrintFormat("[PyramidTrend EMERGENCY][%s] 強制損切り: ticket=%d, open=%.5f, cur=%.5f, loss=%.5f(limit=%.5f)",
+                       sym, ticket, openPrice, curPrice, priceDiff, -maxLoss);
+            ClosePosition(ticket, sym, (int)mg);
+         }
       }
    }
 }

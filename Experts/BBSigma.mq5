@@ -40,7 +40,7 @@ input double   LotHalving        = 0.5;         // ロット減少率
 input int      MaxPyramid        = 0;           // 最大追加回数(0=無制限)
 
 //--- 利確設定
-input double   TakeProfit_Equity_Pct = 20.0;    // エクイティが残高のこの%上回ったら全決済(0=無効)
+input double   TakeProfit_Equity_Pct = 10.0;    // エクイティが残高のこの%上回ったら全決済(0=無効)
 input double   TakeProfit_Pair_Pct   = 0;     // 通貨ペア単位の含み益が残高のこの%超えたらそのペア利確(0=無効)
 input double   StopLoss_Equity_Pct   = 0;       // エクイティが残高のこの%下回ったら全決済(0=無効)
 input double   StopLoss_Pair_Pct     = 0;       // 通貨ペア単位の含み損が残高のこの%超えたらそのペア決済(0=無効)
@@ -64,6 +64,10 @@ input double   MaxSpread_Pips    = 4.0;
 input int      TradingStartHour  = 0;
 input int      TradingEndHour    = 0;
 input int      ReentryCooldown   = 8;           // 決済後の再エントリー抑制(時間)
+
+//--- 通貨エクスポージャー制限
+input bool     Exposure_Enabled  = true;        // 通貨エクスポージャー制限（同一通貨への偏り防止）
+input int      Exposure_MaxSameCcy = 2;         // 同じ通貨に同方向で持てる最大ペア数
 
 //--- 週末/月末決済設定
 enum ENUM_CLOSE_MODE {
@@ -513,6 +517,7 @@ void OnTick()
          if(TimeCurrent() - lastCloseTime[i] < ReentryCooldown * 3600) continue;
       }
 
+      // 通貨エクスポージャー制限（CheckEntry内で方向判定前にシンボル単位でチェック）
       CheckEntry(sym, magic, i);
    }
 }
@@ -566,12 +571,14 @@ void CheckEntry(string sym, int magic, int idx)
 
    // Buy条件: 陽線 + 終値が+2σにタッチ（以上）
    if(close1 > open1 && close1 >= bb_upper[1]) {
+      if(Exposure_Enabled && IsExposureExceeded(sym, 1)) return;
       OpenOrder(sym, ORDER_TYPE_BUY, lot, magic, 0);
       return;
    }
 
    // Sell条件: 陰線 + 終値が-2σにタッチ（以下）
    if(close1 < open1 && close1 <= bb_lower[1]) {
+      if(Exposure_Enabled && IsExposureExceeded(sym, -1)) return;
       OpenOrder(sym, ORDER_TYPE_SELL, lot, magic, 0);
       return;
    }
@@ -1053,6 +1060,73 @@ bool IsAbnormalMarket(string sym, int idx)
    if(ratio >= AbnormalMarket_Mult) {
       PrintFormat("[BBSigma][%s] 異常相場検知: ATR=%.5f, 平均ATR=%.5f, 倍率=%.1f",
                  sym, currentATR, avgATR, ratio);
+      return true;
+   }
+
+   return false;
+}
+//+------------------------------------------------------------------+
+
+//+------------------------------------------------------------------+
+// 通貨エクスポージャー判定
+// 新規エントリーしようとしているペアの各通貨について、
+// 既存ポジションで同方向のエクスポージャーが最大数を超えていたらtrue
+//
+// 例: USDJPY BUY → USD買い・JPY売り
+//     既にEURJPY SELL(JPY買い方向ではない→JPY売り方向)を持っている場合は
+//     JPY売り方向がカウントされる
+//+------------------------------------------------------------------+
+bool IsExposureExceeded(string sym, int direction)
+{
+   // シンボルからベース通貨とクオート通貨を抽出（6文字ペア前提）
+   string base = StringSubstr(sym, 0, 3);
+   string quote = StringSubstr(sym, 3, 3);
+
+   // この新規エントリーが各通貨にどの方向のエクスポージャーを与えるか
+   // BUY: base買い(+1), quote売り(-1)
+   // SELL: base売り(-1), quote買い(+1)
+   // baseExposure: +1=買い, -1=売り
+   int baseExp = direction;      // BUY(+1)ならbase買い、SELL(-1)ならbase売り
+   int quoteExp = -direction;    // BUY(+1)ならquote売り、SELL(-1)ならquote買い
+
+   // 既存ポジションから各通貨のエクスポージャーをカウント
+   // カウント方法: 同じ通貨が同じ方向に何ペア分使われているか
+   int baseCount = 0;
+   int quoteCount = 0;
+
+   int magicMax = MagicBase + pairCount - 1;
+   for(int i = PositionsTotal() - 1; i >= 0; i--) {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0) continue;
+      long mg = PositionGetInteger(POSITION_MAGIC);
+      if(mg < MagicBase || mg > magicMax) continue;
+
+      string posSym = PositionGetString(POSITION_SYMBOL);
+      int posDir = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) ? 1 : -1;
+
+      string posBase = StringSubstr(posSym, 0, 3);
+      string posQuote = StringSubstr(posSym, 3, 3);
+
+      // そのポジションがbase通貨に与える方向
+      // posBase方向: posDir, posQuote方向: -posDir
+      
+      // baseのチェック: 既存ポジションがbase通貨を同方向で使っている
+      if(posBase == base && posDir == baseExp) baseCount++;
+      if(posQuote == base && (-posDir) == baseExp) baseCount++;
+
+      // quoteのチェック: 既存ポジションがquote通貨を同方向で使っている
+      if(posBase == quote && posDir == quoteExp) quoteCount++;
+      if(posQuote == quote && (-posDir) == quoteExp) quoteCount++;
+   }
+
+   if(baseCount >= Exposure_MaxSameCcy) {
+      PrintFormat("[BBSigma][%s] エクスポージャー制限: %s方向が%d/%d超過",
+                 sym, base, baseCount, Exposure_MaxSameCcy);
+      return true;
+   }
+   if(quoteCount >= Exposure_MaxSameCcy) {
+      PrintFormat("[BBSigma][%s] エクスポージャー制限: %s方向が%d/%d超過",
+                 sym, quote, quoteCount, Exposure_MaxSameCcy);
       return true;
    }
 

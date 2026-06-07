@@ -31,7 +31,7 @@ input double   Decay_BaseBalance = 0;
 input int      BB_Period         = 20;          // BB期間（=中央線MA期間）
 input double   BB_Deviation      = 2.0;         // BB偏差
 input ENUM_TIMEFRAMES BB_TF      = PERIOD_H4;   // BB時間足
-input int      BB_Expand_Lookback = 5;          // エクスパンション判定の過去本数
+input int      BB_Expand_Lookback = 8;          // エクスパンション判定の過去本数
 input double   BB_Body_Ratio     = 0.5;         // バンドタッチ足の実体/バンド幅比率(0=無効)
 
 //--- ピラミッティング設定
@@ -40,11 +40,12 @@ input double   LotHalving        = 0.5;         // ロット減少率
 input int      MaxPyramid        = 0;           // 最大追加回数(0=無制限)
 
 //--- 利確設定
-input double   TakeProfit_Equity_Pct = 30.0;    // エクイティが残高のこの%上回ったら全決済(0=無効)
-input double   StopLoss_Equity_Pct   = 0;    // エクイティが残高のこの%下回ったら全決済(0=無効)
-input double   StopLoss_Pair_Pct     = 0;  // 通貨ペア単位の含み損が残高のこの%超えたらそのペア決済(0=無効)
-input bool     Bouge_Close           = false;     // ボージ（トレンド終了）で決済する
-input bool     OriginBase_SL         = false;     // 起点ベース損切り（含み損起点から残高10%で利確/起点に戻ったら損切り）
+input double   TakeProfit_Equity_Pct = 50.0;    // エクイティが残高のこの%上回ったら全決済(0=無効)
+input double   TakeProfit_Pair_Pct   = 30.0;     // 通貨ペア単位の含み益が残高のこの%超えたらそのペア利確(0=無効)
+input double   StopLoss_Equity_Pct   = 0;       // エクイティが残高のこの%下回ったら全決済(0=無効)
+input double   StopLoss_Pair_Pct     = 30.0;       // 通貨ペア単位の含み損が残高のこの%超えたらそのペア決済(0=無効)
+input bool     Bouge_Close           = false;   // ボージ（トレンド終了）で決済する
+input bool     OriginBase_SL         = false;   // 起点ベース損切り（含み損起点から残高10%で利確/起点に戻ったら損切り）
 
 //--- リスク管理
 input double   MaxSpread_Pips    = 4.0;
@@ -434,13 +435,7 @@ void ManagePositions(string sym, int magic, int idx)
          double lossPct = MathAbs(pairLoss) / balance * 100.0;
          if(lossPct >= StopLoss_Pair_Pct) {
             PrintFormat("[BBSigma][%s] ペア損切り: loss=%.0f (%.1f%%)", sym, pairLoss, lossPct);
-            for(int i = PositionsTotal() - 1; i >= 0; i--) {
-               ulong ticket = PositionGetTicket(i);
-               if(ticket == 0) continue;
-               if(PositionGetString(POSITION_SYMBOL) != sym) continue;
-               if(PositionGetInteger(POSITION_MAGIC) != magic) continue;
-               ClosePosition(ticket, sym, magic);
-            }
+            CloseAllPairPositions(sym, magic);
             lastCloseTime[idx] = TimeCurrent();
             return;
          }
@@ -455,6 +450,20 @@ void ManagePositions(string sym, int magic, int idx)
       if(PositionGetString(POSITION_SYMBOL) != sym) continue;
       if(PositionGetInteger(POSITION_MAGIC) != magic) continue;
       pairProfit += PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
+   }
+
+   // ペア単位の利確判定
+   if(TakeProfit_Pair_Pct > 0 && pairProfit > 0) {
+      double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+      if(balance > 0) {
+         double gainPct = pairProfit / balance * 100.0;
+         if(gainPct >= TakeProfit_Pair_Pct) {
+            PrintFormat("[BBSigma][%s] ペア利確: profit=%.0f (+%.1f%%)", sym, pairProfit, gainPct);
+            CloseAllPairPositions(sym, magic);
+            lastCloseTime[idx] = TimeCurrent();
+            return;
+         }
+      }
    }
 
    // === ボージ決済 ===
@@ -475,14 +484,20 @@ void ManagePositions(string sym, int magic, int idx)
       } else {
          PrintFormat("[BBSigma][%s] ボージ損切り: profit=%.0f", sym, pairProfit);
       }
-      for(int i = PositionsTotal() - 1; i >= 0; i--) {
-         ulong ticket = PositionGetTicket(i);
-         if(ticket == 0) continue;
-         if(PositionGetString(POSITION_SYMBOL) != sym) continue;
-         if(PositionGetInteger(POSITION_MAGIC) != magic) continue;
-         ClosePosition(ticket, sym, magic);
-      }
+      CloseAllPairPositions(sym, magic);
       lastCloseTime[idx] = TimeCurrent();
+   }
+}
+
+//+------------------------------------------------------------------+
+void CloseAllPairPositions(string sym, int magic)
+{
+   for(int i = PositionsTotal() - 1; i >= 0; i--) {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0) continue;
+      if(PositionGetString(POSITION_SYMBOL) != sym) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != magic) continue;
+      ClosePosition(ticket, sym, magic);
    }
 }
 

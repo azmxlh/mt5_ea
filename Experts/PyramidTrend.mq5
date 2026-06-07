@@ -29,22 +29,26 @@ input double   Decay_BaseBalance = 0;           // 0=起動時残高を自動使
 //--- MA設定（大トレンド方向判定）
 input int      MA_Period         = 200;         // 200MA（長期トレンド）
 input ENUM_TIMEFRAMES MA_TF      = PERIOD_H4;   // H4の200MA ≒ D1の50MA相当
+input int      MA_HTF_Period     = 50;          // 上位足MAフィルター期間
+input ENUM_TIMEFRAMES MA_HTF_TF  = PERIOD_D1;   // 上位足MA時間足
+input bool     MA_HTF_Filter     = false;        // 上位足MAフィルター有効
 
 //--- BB設定（ブレイクアウトトリガー）
 input int      BB_Period         = 20;
 input double   BB_Deviation      = 2.0;
-input ENUM_TIMEFRAMES BB_TF      = PERIOD_D1;   // 日足BBブレイクでエントリー
+input ENUM_TIMEFRAMES BB_TF      = PERIOD_H4;   // H4 BBブレイクでエントリー
 input int      BB_Squeeze_Lookback = 20;         // スクイーズ判定の過去本数
 input double   BB_Squeeze_Ratio  = 0.8;          // バンド幅が平均のこの倍率以下ならスクイーズ
+input double   BB_Break_Body_ATR = 0.3;          // ブレイク足の実体がATR×この倍率以上で有効(0=無効)
 
 //--- ADX設定（トレンド強度フィルター）
 input int      ADX_Period        = 14;
-input double   ADX_Min           = 25.0;        // ADXがこの値以上でのみエントリー
-input ENUM_TIMEFRAMES ADX_TF     = PERIOD_D1;   // 日足ADX
+input double   ADX_Min           = 20.0;        // ADXがこの値以上でのみエントリー
+input ENUM_TIMEFRAMES ADX_TF     = PERIOD_H4;   // H4 ADX
 
 //--- ATR設定
 input int      ATR_Period        = 14;
-input ENUM_TIMEFRAMES ATR_TF     = PERIOD_D1;   // 日足ATR
+input ENUM_TIMEFRAMES ATR_TF     = PERIOD_H4;   // H4 ATR
 
 //--- ピラミッティング設定
 input double   Pyramid_ATR_Multi = 1.5;         // 追加エントリー間隔(ATR倍率)
@@ -54,7 +58,7 @@ input int      MaxPyramid        = 0;           // 最大追加回数
 //--- SL管理設定
 input double   SL_Initial_ATR    = 2.0;         // 初期SL(ATR倍率) ※損切り
 input double   SL_BE_Even_ATR    = 1.5;         // 含み益がこれ超えたら建値保護開始(ATR倍率)
-input double   TrailingStop_ATR  = 0.8;         // 最高益からの許容戻し幅(ATR倍率) ※狭めて早めに利確
+input double   TrailingStop_ATR  = 1.5;         // 最高益からの許容戻し幅(ATR倍率) ※狭めて早めに利確
 input double   SL_Emergency_Pct  = 0;         // 緊急損切り(建値からの%幅) 0=無効
 
 //--- 利確設定
@@ -65,7 +69,7 @@ input bool     TP_UseBBBand      = false;       // BB外バンド利確
 input double   MaxSpread_Pips    = 4.0;
 input int      TradingStartHour  = 0;           // 0=制限なし(日足ベースなので不要)
 input int      TradingEndHour    = 0;
-input int      ReentryCooldown   = 48;          // 決済後の再エントリー抑制(時間)
+input int      ReentryCooldown   = 12;          // 決済後の再エントリー抑制(時間)
 
 //--- 損失制限
 input double   MaxDailyLoss_Pct  = 0;           // 日次最大損失(残高の%) 0=無効
@@ -82,6 +86,7 @@ input string   AllowedAccounts   = "75545335,70643523,75548484";
 string pairs[];
 int    pairCount;
 int    handleMA[];
+int    handleMA_HTF[];
 int    handleBB[];
 int    handleATR[];
 int    handleADX[];
@@ -120,6 +125,7 @@ int OnInit()
    }
 
    ArrayResize(handleMA, pairCount);
+   ArrayResize(handleMA_HTF, pairCount);
    ArrayResize(handleBB, pairCount);
    ArrayResize(handleATR, pairCount);
    ArrayResize(handleADX, pairCount);
@@ -137,6 +143,7 @@ int OnInit()
       if(!SymbolSelect(pairs[i], true)) {
          PrintFormat("[PyramidTrend WARN] シンボル選択失敗（スキップ）: %s", pairs[i]);
          handleMA[i] = INVALID_HANDLE;
+         handleMA_HTF[i] = INVALID_HANDLE;
          handleBB[i] = INVALID_HANDLE;
          handleATR[i] = INVALID_HANDLE;
          handleADX[i] = INVALID_HANDLE;
@@ -145,14 +152,16 @@ int OnInit()
       }
 
       handleMA[i]  = iMA(pairs[i], MA_TF, MA_Period, 0, MODE_SMA, PRICE_CLOSE);
+      handleMA_HTF[i] = iMA(pairs[i], MA_HTF_TF, MA_HTF_Period, 0, MODE_SMA, PRICE_CLOSE);
       handleBB[i]  = iBands(pairs[i], BB_TF, BB_Period, 0, BB_Deviation, PRICE_CLOSE);
       handleATR[i] = iATR(pairs[i], ATR_TF, ATR_Period);
       handleADX[i] = iADX(pairs[i], ADX_TF, ADX_Period);
 
-      if(handleMA[i] == INVALID_HANDLE || handleBB[i] == INVALID_HANDLE ||
+      if(handleMA[i] == INVALID_HANDLE || handleMA_HTF[i] == INVALID_HANDLE || handleBB[i] == INVALID_HANDLE ||
          handleATR[i] == INVALID_HANDLE || handleADX[i] == INVALID_HANDLE) {
          PrintFormat("[PyramidTrend WARN] インジケータ作成失敗（スキップ）: %s", pairs[i]);
          if(handleMA[i] != INVALID_HANDLE) { IndicatorRelease(handleMA[i]); handleMA[i] = INVALID_HANDLE; }
+         if(handleMA_HTF[i] != INVALID_HANDLE) { IndicatorRelease(handleMA_HTF[i]); handleMA_HTF[i] = INVALID_HANDLE; }
          if(handleBB[i] != INVALID_HANDLE) { IndicatorRelease(handleBB[i]); handleBB[i] = INVALID_HANDLE; }
          if(handleATR[i] != INVALID_HANDLE) { IndicatorRelease(handleATR[i]); handleATR[i] = INVALID_HANDLE; }
          if(handleADX[i] != INVALID_HANDLE) { IndicatorRelease(handleADX[i]); handleADX[i] = INVALID_HANDLE; }
@@ -194,6 +203,7 @@ void OnDeinit(const int reason)
    EventKillTimer();
    for(int i = 0; i < pairCount; i++) {
       if(handleMA[i] != INVALID_HANDLE) IndicatorRelease(handleMA[i]);
+      if(handleMA_HTF[i] != INVALID_HANDLE) IndicatorRelease(handleMA_HTF[i]);
       if(handleBB[i] != INVALID_HANDLE) IndicatorRelease(handleBB[i]);
       if(handleATR[i] != INVALID_HANDLE) IndicatorRelease(handleATR[i]);
       if(handleADX[i] != INVALID_HANDLE) IndicatorRelease(handleADX[i]);
@@ -290,18 +300,32 @@ bool IsNewBar(string sym, int idx)
 //+------------------------------------------------------------------+
 void CheckEntry(string sym, int magic, int idx)
 {
-   double ma[], bb_upper[], bb_lower[], atr[], adx[];
+   double ma[], bb_upper[], bb_lower[], bb_mid[], atr[], adx[];
    ArraySetAsSeries(ma, true);
    ArraySetAsSeries(bb_upper, true);
    ArraySetAsSeries(bb_lower, true);
+   ArraySetAsSeries(bb_mid, true);
    ArraySetAsSeries(atr, true);
    ArraySetAsSeries(adx, true);
 
    if(CopyBuffer(handleMA[idx], 0, 0, 2, ma) < 2) return;
+   if(CopyBuffer(handleBB[idx], 0, 0, 3, bb_mid) < 3) return;
    if(CopyBuffer(handleBB[idx], 1, 0, BB_Squeeze_Lookback + 3, bb_upper) < BB_Squeeze_Lookback + 3) return;
    if(CopyBuffer(handleBB[idx], 2, 0, BB_Squeeze_Lookback + 3, bb_lower) < BB_Squeeze_Lookback + 3) return;
    if(CopyBuffer(handleATR[idx], 0, 0, 1, atr) < 1) return;
    if(CopyBuffer(handleADX[idx], 0, 0, 2, adx) < 2) return;
+
+   // 上位足MAフィルター（日足MAの方向と一致しない場合はスキップ）
+   bool htfBullish = true;
+   bool htfBearish = true;
+   if(MA_HTF_Filter) {
+      double maHTF[];
+      ArraySetAsSeries(maHTF, true);
+      if(CopyBuffer(handleMA_HTF[idx], 0, 0, 2, maHTF) < 2) return;
+      double close1_htf = iClose(sym, MA_HTF_TF, 1);
+      htfBullish = (close1_htf > maHTF[1]);
+      htfBearish = (close1_htf < maHTF[1]);
+   }
 
    // ADXフィルター（前の確定足）
    if(adx[1] < ADX_Min) return;
@@ -320,17 +344,26 @@ void CheckEntry(string sym, int magic, int idx)
 
    double close1 = iClose(sym, BB_TF, 1);  // 前日確定足
    double close2 = iClose(sym, BB_TF, 2);  // 2日前
+   double open1  = iOpen(sym, BB_TF, 1);   // 前日始値
+
+   // ブレイク足の実体サイズフィルター（ヒゲだけのブレイクを除外）
+   if(BB_Break_Body_ATR > 0) {
+      double bodySize = MathAbs(close1 - open1);
+      if(bodySize < atr[0] * BB_Break_Body_ATR) return;
+   }
 
    double lot = CalcInitialLot(sym);
 
    // 買いエントリー条件（スクイーズからのブレイクアウト）:
-   if(close1 > bb_upper[1] && close2 <= bb_upper[2] && close1 > ma[1]) {
+   // BB中央線が上向き + BB上バンドブレイク
+   if(htfBullish && bb_mid[1] > bb_mid[2] && close1 > bb_upper[1] && close2 <= bb_upper[2] && close1 > ma[1] && close1 > open1) {
       OpenOrder(sym, ORDER_TYPE_BUY, lot, magic, 0);
       return;
    }
 
    // 売りエントリー条件:
-   if(close1 < bb_lower[1] && close2 >= bb_lower[2] && close1 < ma[1]) {
+   // BB中央線が下向き + BB下バンドブレイク
+   if(htfBearish && bb_mid[1] < bb_mid[2] && close1 < bb_lower[1] && close2 >= bb_lower[2] && close1 < ma[1] && close1 < open1) {
       OpenOrder(sym, ORDER_TYPE_SELL, lot, magic, 0);
       return;
    }
@@ -391,7 +424,7 @@ void CheckPyramid(string sym, int magic, int idx, int posCount)
    lot = MathMin(lot, SymbolInfoDouble(sym, SYMBOL_VOLUME_MAX));
    if(lot < minLot) return;
 
-   double sl = 0;  // SLはEA内部で管理するので注文SLは不要
+   double sl = 0;
 
    if(OpenOrder(sym, (direction == 1) ? ORDER_TYPE_BUY : ORDER_TYPE_SELL, lot, magic, sl)) {
       PrintFormat("[PyramidTrend][%s] ピラミッド #%d: %.2f lots", sym, pyramidCount + 1, lot);

@@ -40,12 +40,17 @@ input double   LotHalving        = 0.5;         // ロット減少率
 input int      MaxPyramid        = 0;           // 最大追加回数(0=無制限)
 
 //--- 利確設定
-input double   TakeProfit_Equity_Pct = 50.0;    // エクイティが残高のこの%上回ったら全決済(0=無効)
-input double   TakeProfit_Pair_Pct   = 30.0;     // 通貨ペア単位の含み益が残高のこの%超えたらそのペア利確(0=無効)
+input double   TakeProfit_Equity_Pct = 20.0;    // エクイティが残高のこの%上回ったら全決済(0=無効)
+input double   TakeProfit_Pair_Pct   = 0;     // 通貨ペア単位の含み益が残高のこの%超えたらそのペア利確(0=無効)
 input double   StopLoss_Equity_Pct   = 0;       // エクイティが残高のこの%下回ったら全決済(0=無効)
-input double   StopLoss_Pair_Pct     = 30.0;       // 通貨ペア単位の含み損が残高のこの%超えたらそのペア決済(0=無効)
+input double   StopLoss_Pair_Pct     = 0;       // 通貨ペア単位の含み損が残高のこの%超えたらそのペア決済(0=無効)
 input bool     Bouge_Close           = false;   // ボージ（トレンド終了）で決済する
 input bool     OriginBase_SL         = false;   // 起点ベース損切り（含み損起点から残高10%で利確/起点に戻ったら損切り）
+
+//--- Equity傾き損切り設定
+input bool     EquitySlope_Enabled   = true;   // Equity傾き損切り（Equityが連続下降で全決済）
+input int      EquitySlope_Hours     = 4;       // 判定間隔（時間）- この間隔でEquityを記録
+input int      EquitySlope_Count     = 3;       // 連続下降回数 - この回数連続で下がったら損切り
 
 //--- リスク管理
 input double   MaxSpread_Pips    = 4.0;
@@ -53,9 +58,27 @@ input int      TradingStartHour  = 0;
 input int      TradingEndHour    = 0;
 input int      ReentryCooldown   = 8;           // 決済後の再エントリー抑制(時間)
 
+//--- 週末/月末決済設定
+enum ENUM_CLOSE_MODE {
+   CLOSE_MODE_OFF      = 0,   // Off（無効）
+   CLOSE_MODE_WEEKLY   = 1,   // Weekly（毎週金曜）
+   CLOSE_MODE_MONTHLY  = 2    // Monthly（月末最終金曜のみ）
+};
+input ENUM_CLOSE_MODE  CloseMode_Friday     = CLOSE_MODE_MONTHLY;  // 金曜決済モード(Weekly/Monthly/Off)
+input int              Friday_EOD_Hour      = 23;                 // 金曜強制決済の時刻(サーバー時間)
+
 //--- 損失制限
 input double   MaxDailyLoss_Pct  = 0;
 input double   MaxDrawdown_Pct   = 0;
+
+//--- 連敗停止（Balance下降検知）
+input bool     BalanceSlope_Enabled  = false;    // Balance下降時の新規エントリー停止
+input double   BalanceSlope_Stop_Pct = 5.0;     // 直近高値からこの%下がったら停止
+input double   BalanceSlope_Resume_Pct = 2.0;   // 直近高値からこの%以内に回復したら再開(0=高値復帰で再開)
+
+//--- Equityトレーリング決済
+input bool     EquityTrail_Enabled   = false;    // Equityトレーリング決済(有効/無効)
+input double   EquityTrail_Drop_Pct  = 3.0;     // Equityピークからこの%下落で全決済
 
 //--- 全体ポジション制限
 input int      MaxTotalPositions  = 15;
@@ -78,6 +101,17 @@ bool   g_ddHalt = false;
 // 起点ベース損切り用
 double g_equityBottom;     // 含み損の起点
 bool   g_equityRecovered;  // 起点確定フラグ
+
+// Balance下降検知用
+double g_balanceHWM = 0;   // Balance高値（確定残高のHighWaterMark）
+bool   g_balanceHalt = false;  // Balance下降による新規エントリー停止中
+
+// Equityトレーリング決済用
+double g_equityPeak = 0;       // ポジション保有中のEquity最高値
+
+// Equity傾き損切り用
+double g_equitySlopeHistory[];   // Equity記録用配列
+datetime g_equitySlopeLastTime = 0;  // 最後に記録した時刻
 
 //+------------------------------------------------------------------+
 double GetMinLot()
@@ -143,6 +177,13 @@ int OnInit()
       initialBalance = AccountInfoDouble(ACCOUNT_BALANCE);
 
    highWaterMark = AccountInfoDouble(ACCOUNT_BALANCE);
+   g_balanceHWM = AccountInfoDouble(ACCOUNT_BALANCE);
+   g_balanceHalt = false;
+   g_equityPeak = 0;
+
+   // Equity傾き損切り用初期化
+   ArrayResize(g_equitySlopeHistory, 0);
+   g_equitySlopeLastTime = 0;
 
    PrintFormat("[BBSigma] 初期化完了: ペア=%d/%d, 複利=%s, BB(%d,%.1f) on %s",
               enabledCount, pairCount,
@@ -213,6 +254,146 @@ void OnTick()
       }
    }
 
+   // === Equityトレーリング決済 ===
+   // ポジション保有中のEquityピークを常に追跡し、ピークから一定%下落で全決済
+   if(EquityTrail_Enabled && CountAllPositions() > 0) {
+      double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+      double equity  = AccountInfoDouble(ACCOUNT_EQUITY);
+
+      // ピーク初期値はBalance（ポジション取得直後のベースライン）
+      if(g_equityPeak == 0)
+         g_equityPeak = balance;
+
+      // Equityピーク更新
+      if(equity > g_equityPeak)
+         g_equityPeak = equity;
+
+      // ピークからの下落で全決済（利益方向でも損失方向でも発動）
+      if(g_equityPeak > 0) {
+         double dropPct = (g_equityPeak - equity) / g_equityPeak * 100.0;
+         if(dropPct >= EquityTrail_Drop_Pct) {
+            PrintFormat("[BBSigma] Equityトレーリング決済: equity=%.0f, peak=%.0f, drop=%.1f%%",
+                       equity, g_equityPeak, dropPct);
+            CloseEverything();
+            g_equityPeak = 0;
+            g_equityBottom = 0;
+            g_equityRecovered = false;
+            // Balance HWMをリセットして新規エントリー停止を防ぐ
+            g_balanceHWM = AccountInfoDouble(ACCOUNT_BALANCE);
+            g_balanceHalt = false;
+            return;
+         }
+      }
+   } else if(CountAllPositions() == 0) {
+      // ポジションなし → リセット
+      g_equityPeak = 0;
+   }
+
+   // === Equity傾き損切り ===
+   // 一定時間間隔でEquityを記録し、連続下降が続いたら全決済
+   if(EquitySlope_Enabled && CountAllPositions() > 0) {
+      datetime now = TimeCurrent();
+      double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+
+      // 初回または間隔経過で記録
+      if(g_equitySlopeLastTime == 0 || (now - g_equitySlopeLastTime) >= EquitySlope_Hours * 3600) {
+         int size = ArraySize(g_equitySlopeHistory);
+         ArrayResize(g_equitySlopeHistory, size + 1);
+         g_equitySlopeHistory[size] = equity;
+         g_equitySlopeLastTime = now;
+
+         // 必要な記録数を超えたら古いものを削除
+         int maxKeep = EquitySlope_Count + 1;
+         if(ArraySize(g_equitySlopeHistory) > maxKeep) {
+            int removeCount = ArraySize(g_equitySlopeHistory) - maxKeep;
+            for(int s = 0; s < maxKeep; s++)
+               g_equitySlopeHistory[s] = g_equitySlopeHistory[s + removeCount];
+            ArrayResize(g_equitySlopeHistory, maxKeep);
+         }
+
+         // 連続下降チェック
+         if(ArraySize(g_equitySlopeHistory) >= EquitySlope_Count + 1) {
+            bool allDecline = true;
+            int histSize = ArraySize(g_equitySlopeHistory);
+            for(int s = 1; s < histSize; s++) {
+               if(g_equitySlopeHistory[s] >= g_equitySlopeHistory[s - 1]) {
+                  allDecline = false;
+                  break;
+               }
+            }
+            if(allDecline) {
+               PrintFormat("[BBSigma] Equity傾き損切り: %d回連続下降 (%.0f → %.0f)",
+                          EquitySlope_Count,
+                          g_equitySlopeHistory[0],
+                          g_equitySlopeHistory[histSize - 1]);
+               CloseEverything();
+               ArrayResize(g_equitySlopeHistory, 0);
+               g_equitySlopeLastTime = 0;
+               g_equityPeak = 0;
+               g_equityBottom = 0;
+               g_equityRecovered = false;
+               g_balanceHWM = AccountInfoDouble(ACCOUNT_BALANCE);
+               g_balanceHalt = false;
+               return;
+            }
+         }
+      }
+   } else if(CountAllPositions() == 0 && ArraySize(g_equitySlopeHistory) > 0) {
+      // ポジションなし → 記録リセット
+      ArrayResize(g_equitySlopeHistory, 0);
+      g_equitySlopeLastTime = 0;
+   }
+
+   // === Balance下降検知（新規エントリー停止） ===
+   if(BalanceSlope_Enabled) {
+      double bal = AccountInfoDouble(ACCOUNT_BALANCE);
+      if(bal > g_balanceHWM)
+         g_balanceHWM = bal;
+
+      if(g_balanceHWM > 0) {
+         double balDropPct = (g_balanceHWM - bal) / g_balanceHWM * 100.0;
+         double resumeThreshold = (BalanceSlope_Resume_Pct > 0) ? BalanceSlope_Resume_Pct : 0;
+
+         if(!g_balanceHalt && balDropPct >= BalanceSlope_Stop_Pct) {
+            g_balanceHalt = true;
+            PrintFormat("[BBSigma] Balance下降停止: balance=%.0f, HWM=%.0f, drop=%.1f%%",
+                       bal, g_balanceHWM, balDropPct);
+         }
+         if(g_balanceHalt && balDropPct <= resumeThreshold) {
+            g_balanceHalt = false;
+            PrintFormat("[BBSigma] Balance回復再開: balance=%.0f, HWM=%.0f, drop=%.1f%%",
+                       bal, g_balanceHWM, balDropPct);
+         }
+      }
+   }
+
+   // === 金曜決済ロジック ===
+   bool isFridayActive = IsFridayCloseActive();
+   if(isFridayActive && CountAllPositions() > 0) {
+      // 金曜日: 残高全体で利益が出ていればすべて決済
+      double bal = AccountInfoDouble(ACCOUNT_BALANCE);
+      double eq  = AccountInfoDouble(ACCOUNT_EQUITY);
+      if(eq > bal) {
+         PrintFormat("[BBSigma] 金曜利確: equity=%.0f > balance=%.0f (mode=%s)",
+                    eq, bal, EnumToString(CloseMode_Friday));
+         CloseEverything();
+         g_equityBottom = 0;
+         g_equityRecovered = false;
+         return;
+      }
+      // 金曜日: サーバー時間指定時刻以降にポジションが残っていれば全決済
+      MqlDateTime dtFri;
+      TimeToStruct(TimeCurrent(), dtFri);
+      if(dtFri.hour >= Friday_EOD_Hour) {
+         PrintFormat("[BBSigma] 金曜EOD決済: hour=%d >= %d (mode=%s)",
+                    dtFri.hour, Friday_EOD_Hour, EnumToString(CloseMode_Friday));
+         CloseEverything();
+         g_equityBottom = 0;
+         g_equityRecovered = false;
+         return;
+      }
+   }
+
    // 日次損失チェック
    bool dailyLossHit = (MaxDailyLoss_Pct > 0 && IsDailyLossExceeded());
 
@@ -272,12 +453,18 @@ void OnTick()
       // 損失制限到達
       if(dailyLossHit) continue;
 
-      // 既存ポジション → ピラミッディング
+      // 既存ポジション → ピラミッディング（金曜日も追加は許可）
       int posCount = CountPositions(sym, magic);
       if(posCount > 0) {
          CheckPyramid(sym, magic, i, posCount);
          continue;
       }
+
+      // 金曜日は新規エントリー禁止
+      if(isFridayActive) continue;
+
+      // Balance下降中は新規エントリー禁止
+      if(g_balanceHalt) continue;
 
       // 新規エントリー（バー確定ベース）
       if(!IsNewBar(sym, i)) continue;
@@ -769,5 +956,35 @@ ENUM_ORDER_TYPE_FILLING GetFillingMode(string sym)
    if((fillMode & SYMBOL_FILLING_IOC) == SYMBOL_FILLING_IOC) return ORDER_FILLING_IOC;
    if(fillMode == 0) return ORDER_FILLING_FOK;
    return ORDER_FILLING_RETURN;
+}
+
+//+------------------------------------------------------------------+
+// 金曜決済が有効かどうか判定
+// CLOSE_MODE_WEEKLY: 毎週金曜日
+// CLOSE_MODE_MONTHLY: その月の最終金曜日のみ
+// CLOSE_MODE_OFF: 常にfalse
+//+------------------------------------------------------------------+
+bool IsFridayCloseActive()
+{
+   if(CloseMode_Friday == CLOSE_MODE_OFF) return false;
+
+   MqlDateTime dt;
+   TimeToStruct(TimeCurrent(), dt);
+   if(dt.day_of_week != 5) return false;  // 金曜日でなければfalse
+
+   if(CloseMode_Friday == CLOSE_MODE_WEEKLY) return true;
+
+   // CLOSE_MODE_MONTHLY: 月末最終金曜日かチェック
+   // 今日が月の最終金曜日 = 今日+7日が翌月になる
+   if(CloseMode_Friday == CLOSE_MODE_MONTHLY) {
+      MqlDateTime dtNext;
+      datetime nextWeek = TimeCurrent() + 7 * 24 * 60 * 60;
+      TimeToStruct(nextWeek, dtNext);
+      // 7日後の月が今日の月と異なれば、今日が最終金曜日
+      if(dtNext.mon != dt.mon) return true;
+      return false;
+   }
+
+   return false;
 }
 //+------------------------------------------------------------------+

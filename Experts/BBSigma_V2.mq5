@@ -650,8 +650,8 @@ void CheckMartingale(string sym, int magic, int idx, int posCount)
    double lastLot = GetLastLot(sym, magic);
    double lot = lastLot * Martin_Multiplier;
 
-   // 最大ロット制限
-   if(lot > Martin_MaxLot) lot = Martin_MaxLot;
+   // 最大ロット制限（0=制限なし、ブローカー上限に依存）
+   if(Martin_MaxLot > 0 && lot > Martin_MaxLot) lot = Martin_MaxLot;
 
    double minLot = GetMinLot();
    double stepLot = SymbolInfoDouble(sym, SYMBOL_VOLUME_STEP);
@@ -705,17 +705,6 @@ void ManagePositions(string sym, int magic, int idx)
             return;
          }
       }
-   }
-
-   // === マーチンゲール決済: ポジション群がトータルプラスになったら全決済 ===
-   // 条件: 最初のポジションが含み損（＝マーチンゲールモード中）かつ全体がプラス
-   double firstProfit = GetFirstPositionProfit(sym, magic);
-   if(firstProfit < 0 && posCount > 1 && pairProfit > 0) {
-      PrintFormat("[BBSigma_V2][%s] マーチンゲール利確: 合計profit=%.0f (ポジション数=%d)",
-                 sym, pairProfit, posCount);
-      CloseAllPairPositions(sym, magic);
-      lastCloseTime[idx] = TimeCurrent();
-      return;
    }
 
    // === ボージ決済 ===

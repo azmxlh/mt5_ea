@@ -586,9 +586,8 @@ void OnTick()
       if(DelayEntry_Enabled && g_pendingSignal[i] != 0) {
          if(IsNewBar(sym, i)) {
             if(IsTradingHour() && IsSpreadOK(sym)) {
-               CheckEntry(sym, magic, i);
+               CheckDelayedEntry(sym, magic, i);
             } else {
-               // 取引時間外orスプレッド超過 → シグナル破棄
                g_pendingSignal[i] = 0;
                g_pendingBarTime[i] = 0;
             }
@@ -626,6 +625,84 @@ bool IsNewBar(string sym, int idx)
 }
 
 //+------------------------------------------------------------------+
+// [B] 遅延エントリー確認: シグナル予約済みの次足で確定足のCloseを確認
+// 確定したbar[1]のClose位置がバンドウォーク範囲内かチェック
+//+------------------------------------------------------------------+
+void CheckDelayedEntry(string sym, int magic, int idx)
+{
+   int pendingDir = g_pendingSignal[idx];
+   if(pendingDir == 0) return;
+
+   double bb_mid[], bb_upper[], bb_lower[];
+   ArraySetAsSeries(bb_mid, true);
+   ArraySetAsSeries(bb_upper, true);
+   ArraySetAsSeries(bb_lower, true);
+
+   if(CopyBuffer(handleBB[idx], 0, 0, 3, bb_mid) < 3) { g_pendingSignal[idx] = 0; return; }
+   if(CopyBuffer(handleBB[idx], 1, 0, 3, bb_upper) < 3) { g_pendingSignal[idx] = 0; return; }
+   if(CopyBuffer(handleBB[idx], 2, 0, 3, bb_lower) < 3) { g_pendingSignal[idx] = 0; return; }
+
+   // 確定足(bar[1])のCloseがバンドウォーク範囲内か確認
+   double close1 = iClose(sym, BB_TF, 1);
+   double sigmaWidth = (bb_upper[1] - bb_mid[1]) / BB_Deviation;
+   if(sigmaWidth <= 0) { g_pendingSignal[idx] = 0; g_pendingBarTime[idx] = 0; return; }
+
+   double sigmaPos;
+   if(pendingDir == 1) {
+      sigmaPos = (close1 - bb_mid[1]) / sigmaWidth;
+   } else {
+      sigmaPos = (bb_mid[1] - close1) / sigmaWidth;
+   }
+
+   // σ位置の確認（トレンド方向に維持されているか）
+   if(sigmaPos < DelayEntry_Min_Sigma) {
+      PrintFormat("[BBSigma][%s] 遅延エントリーキャンセル: σ=%.2f < %.1f (バンドウォーク崩れ)",
+                 sym, sigmaPos, DelayEntry_Min_Sigma);
+      g_pendingSignal[idx] = 0;
+      g_pendingBarTime[idx] = 0;
+      return;
+   }
+   if(DelayEntry_Max_Sigma > 0 && sigmaPos > DelayEntry_Max_Sigma) {
+      PrintFormat("[BBSigma][%s] 遅延エントリーキャンセル: σ=%.2f > %.1f (過熱)",
+                 sym, sigmaPos, DelayEntry_Max_Sigma);
+      g_pendingSignal[idx] = 0;
+      g_pendingBarTime[idx] = 0;
+      return;
+   }
+
+   // [A] 上位足トレンドフィルター
+   if(TrendFilter_Enabled && !IsTrendAligned(sym, idx, pendingDir)) {
+      g_pendingSignal[idx] = 0;
+      g_pendingBarTime[idx] = 0;
+      return;
+   }
+
+   // [E] MTFモメンタム確認
+   if(MTF_Enabled && !IsMTFMomentumOK(sym, idx, pendingDir)) {
+      g_pendingSignal[idx] = 0;
+      g_pendingBarTime[idx] = 0;
+      return;
+   }
+
+   // エクスポージャーチェック
+   if(Exposure_Enabled && IsExposureExceeded(sym, pendingDir)) {
+      g_pendingSignal[idx] = 0;
+      g_pendingBarTime[idx] = 0;
+      return;
+   }
+
+   // すべてのフィルター通過 → エントリー実行
+   double lot = CalcInitialLot(sym);
+   ENUM_ORDER_TYPE orderType = (pendingDir == 1) ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   if(OpenOrder(sym, orderType, lot, magic, 0)) {
+      PrintFormat("[BBSigma][%s] 遅延エントリー確定: %s σ=%.2f",
+                 sym, (pendingDir == 1) ? "BUY" : "SELL", sigmaPos);
+   }
+   g_pendingSignal[idx] = 0;
+   g_pendingBarTime[idx] = 0;
+}
+
+//+------------------------------------------------------------------+
 // エントリー: エクスパンション + ±2σバンドタッチ + 実体大の足
 // [B] 遅延エントリー: シグナル発生→次足確認→エントリー
 // [A] 上位足トレンドフィルター: D1 MA方向と一致
@@ -642,76 +719,6 @@ void CheckEntry(string sym, int magic, int idx)
    if(CopyBuffer(handleBB[idx], 0, 0, needBars, bb_mid) < needBars) return;
    if(CopyBuffer(handleBB[idx], 1, 0, needBars, bb_upper) < needBars) return;
    if(CopyBuffer(handleBB[idx], 2, 0, needBars, bb_lower) < needBars) return;
-
-   // === [B] 遅延エントリー: 前バーでシグナルが予約されていたら確認してエントリー ===
-   if(DelayEntry_Enabled && g_pendingSignal[idx] != 0) {
-      int pendingDir = g_pendingSignal[idx];
-
-      // シグナルのバーが1本前であることを確認（古すぎたらキャンセル）
-      datetime bar1Time = iTime(sym, BB_TF, 1);
-      if(bar1Time != g_pendingBarTime[idx]) {
-         g_pendingSignal[idx] = 0;
-         g_pendingBarTime[idx] = 0;
-         return;
-      }
-
-      // 現在足（バー0）の現在価格がバンドウォーク範囲内か確認
-      double sigmaWidth = (bb_upper[0] - bb_mid[0]) / BB_Deviation;
-      if(sigmaWidth <= 0) { g_pendingSignal[idx] = 0; return; }
-
-      double currentPrice = (pendingDir == 1) ? SymbolInfoDouble(sym, SYMBOL_BID) : SymbolInfoDouble(sym, SYMBOL_ASK);
-
-      double sigmaPos;
-      if(pendingDir == 1) {
-         sigmaPos = (currentPrice - bb_mid[0]) / sigmaWidth;
-      } else {
-         sigmaPos = (bb_mid[0] - currentPrice) / sigmaWidth;
-      }
-
-      // σ位置の確認
-      if(sigmaPos < DelayEntry_Min_Sigma) {
-         g_pendingSignal[idx] = 0;
-         g_pendingBarTime[idx] = 0;
-         return;
-      }
-      if(DelayEntry_Max_Sigma > 0 && sigmaPos > DelayEntry_Max_Sigma) {
-         g_pendingSignal[idx] = 0;
-         g_pendingBarTime[idx] = 0;
-         return;
-      }
-
-      // [A] 上位足トレンドフィルター
-      if(TrendFilter_Enabled && !IsTrendAligned(sym, idx, pendingDir)) {
-         g_pendingSignal[idx] = 0;
-         g_pendingBarTime[idx] = 0;
-         return;
-      }
-
-      // [E] MTFモメンタム確認
-      if(MTF_Enabled && !IsMTFMomentumOK(sym, idx, pendingDir)) {
-         g_pendingSignal[idx] = 0;
-         g_pendingBarTime[idx] = 0;
-         return;
-      }
-
-      // エクスポージャーチェック
-      if(Exposure_Enabled && IsExposureExceeded(sym, pendingDir)) {
-         g_pendingSignal[idx] = 0;
-         g_pendingBarTime[idx] = 0;
-         return;
-      }
-
-      // すべてのフィルター通過 → エントリー実行
-      double lot = CalcInitialLot(sym);
-      ENUM_ORDER_TYPE orderType = (pendingDir == 1) ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
-      if(OpenOrder(sym, orderType, lot, magic, 0)) {
-         PrintFormat("[BBSigma][%s] 遅延エントリー確定: %s σ=%.2f",
-                    sym, (pendingDir == 1) ? "BUY" : "SELL", sigmaPos);
-      }
-      g_pendingSignal[idx] = 0;
-      g_pendingBarTime[idx] = 0;
-      return;
-   }
 
    // === シグナル判定（従来のエントリー条件） ===
    double close1 = iClose(sym, BB_TF, 1);
@@ -752,7 +759,7 @@ void CheckEntry(string sym, int magic, int idx)
    if(close1 > open1 && close1 >= bb_upper[1]) {
       if(DelayEntry_Enabled) {
          g_pendingSignal[idx] = 1;
-         g_pendingBarTime[idx] = iTime(sym, BB_TF, 1);
+         g_pendingBarTime[idx] = iTime(sym, BB_TF, 0);  // 現在足の時刻を記録（次足でbar[1]になる）
          PrintFormat("[BBSigma][%s] Buy シグナル予約 (次足確認待ち)", sym);
       } else {
          if(TrendFilter_Enabled && !IsTrendAligned(sym, idx, 1)) return;
@@ -768,7 +775,7 @@ void CheckEntry(string sym, int magic, int idx)
    if(close1 < open1 && close1 <= bb_lower[1]) {
       if(DelayEntry_Enabled) {
          g_pendingSignal[idx] = -1;
-         g_pendingBarTime[idx] = iTime(sym, BB_TF, 1);
+         g_pendingBarTime[idx] = iTime(sym, BB_TF, 0);  // 現在足の時刻を記録（次足でbar[1]になる）
          PrintFormat("[BBSigma][%s] Sell シグナル予約 (次足確認待ち)", sym);
       } else {
          if(TrendFilter_Enabled && !IsTrendAligned(sym, idx, -1)) return;

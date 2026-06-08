@@ -45,15 +45,15 @@ input double   LotHalving        = 0.5;         // ロット減少率
 input int      MaxPyramid        = 5;           // 最大追加回数(0=無制限)
 
 //--- 利確設定
-input double   TakeProfit_Equity_Pct = 5.0;    // エクイティが残高のこの%上回ったら全決済(0=無効)
+input double   TakeProfit_Equity_Pct = 15.0;    // エクイティが残高のこの%上回ったら全決済(0=無効)
 input double   TakeProfit_Pair_Pct   = 0;     // 通貨ペア単位の含み益が残高のこの%超えたらそのペア利確(0=無効)
 input double   StopLoss_Equity_Pct   = 0;       // エクイティが残高のこの%下回ったら全決済(0=無効)
-input double   StopLoss_Pair_Pct     = 3;       // 通貨ペア単位の含み損が残高のこの%超えたらそのペア決済(0=無効)
+input double   StopLoss_Pair_Pct     = 0;       // 通貨ペア単位の含み損が残高のこの%超えたらそのペア決済(0=無効)
 
 //--- 適応型利確設定（BBバンド幅=トレンド強度に応じて利確%を動的に変更）
 input bool     AdaptiveTP_Enabled       = true;     // 適応型利確(有効/無効)
-input double   AdaptiveTP_Max_Pct       = 30.0;     // 強トレンド時の利確%(バンド幅が広い時)
-input double   AdaptiveTP_Min_Pct       = 2.0;      // 弱トレンド時の利確%(バンド幅が狭い時)
+input double   AdaptiveTP_Max_Pct       = 15.0;     // 強トレンド時の利確%(バンド幅が広い時)
+input double   AdaptiveTP_Min_Pct       = 5.0;      // 弱トレンド時の利確%(バンド幅が狭い時)
 input int      AdaptiveTP_Lookback      = 50;       // バンド幅の平均を計算する過去バー数
 input double   AdaptiveTP_Expand_Mult   = 1.2;      // 平均の何倍以上で強トレンド判定
 input double   AdaptiveTP_Squeeze_Mult  = 0.9;      // 平均の何倍以下で弱トレンド判定
@@ -79,16 +79,16 @@ input int      TradingEndHour    = 0;
 input int      ReentryCooldown   = 8;           // 決済後の再エントリー抑制(時間)
 
 //--- エントリーフィルター設定（A: 上位足トレンド / B: 遅延エントリー / E: MTFモメンタム）
-input bool     TrendFilter_Enabled   = false;    // [A] 上位足トレンドフィルター(有効/無効)
+input bool     TrendFilter_Enabled   = true;    // [A] 上位足トレンドフィルター(有効/無効)
 input ENUM_TIMEFRAMES TrendFilter_TF = PERIOD_D1; // [A] トレンド判定用の上位足
 input int      TrendFilter_MA_Period = 20;      // [A] 上位足MAの期間
 input ENUM_MA_METHOD  TrendFilter_MA_Method = MODE_EMA; // [A] MA種別(SMA/EMA)
 
-input bool     DelayEntry_Enabled    = false;    // [B] 遅延エントリー(次足確認)
+input bool     DelayEntry_Enabled    = true;    // [B] 遅延エントリー(次足確認)
 input double   DelayEntry_Min_Sigma  = 0.5;     // [B] 次足で最低限いるべきσ位置(0.5=+0.5σ以上)
 input double   DelayEntry_Max_Sigma  = 3.0;     // [B] 次足でこのσ以上は過熱とみなしスキップ(0=無効)
 
-input bool     MTF_Enabled           = false;    // [E] マルチタイムフレーム確認(有効/無効)
+input bool     MTF_Enabled           = true;    // [E] マルチタイムフレーム確認(有効/無効)
 input ENUM_TIMEFRAMES MTF_Lower_TF   = PERIOD_H1; // [E] 下位足の時間枠
 input int      MTF_RSI_Period        = 14;      // [E] 下位足RSI期間
 input double   MTF_RSI_Buy_Min       = 50.0;    // [E] Buy時:下位足RSIがこの値以上

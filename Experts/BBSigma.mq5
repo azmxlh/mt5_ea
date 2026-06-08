@@ -85,14 +85,14 @@ input int      TrendFilter_MA_Period = 20;      // [A] 上位足MAの期間
 input ENUM_MA_METHOD  TrendFilter_MA_Method = MODE_EMA; // [A] MA種別(SMA/EMA)
 
 input bool     DelayEntry_Enabled    = true;    // [B] 遅延エントリー(次足確認)
-input double   DelayEntry_Min_Sigma  = 1.0;     // [B] 次足で最低限いるべきσ位置(1.0=+1σ以上)
-input double   DelayEntry_Max_Sigma  = 2.5;     // [B] 次足でこのσ以上は過熱とみなしスキップ(0=無効)
+input double   DelayEntry_Min_Sigma  = 0.5;     // [B] 次足で最低限いるべきσ位置(0.5=+0.5σ以上)
+input double   DelayEntry_Max_Sigma  = 3.0;     // [B] 次足でこのσ以上は過熱とみなしスキップ(0=無効)
 
 input bool     MTF_Enabled           = true;    // [E] マルチタイムフレーム確認(有効/無効)
 input ENUM_TIMEFRAMES MTF_Lower_TF   = PERIOD_H1; // [E] 下位足の時間枠
 input int      MTF_RSI_Period        = 14;      // [E] 下位足RSI期間
-input double   MTF_RSI_Buy_Min       = 55.0;    // [E] Buy時:下位足RSIがこの値以上
-input double   MTF_RSI_Sell_Max      = 45.0;    // [E] Sell時:下位足RSIがこの値以下
+input double   MTF_RSI_Buy_Min       = 50.0;    // [E] Buy時:下位足RSIがこの値以上
+input double   MTF_RSI_Sell_Max      = 50.0;    // [E] Sell時:下位足RSIがこの値以下
 
 //--- 通貨エクスポージャー制限
 input bool     Exposure_Enabled  = true;        // 通貨エクスポージャー制限（同一通貨への偏り防止）
@@ -1407,7 +1407,7 @@ double CalcAdaptiveTP()
 
 //+------------------------------------------------------------------+
 // [A] 上位足トレンドフィルター
-// D1のMAの傾き（現在値 vs 前回値）でトレンド方向を判定
+// D1のMAの傾き方向でトレンド方向を判定
 // Buy: MA上昇中 / Sell: MA下降中
 //+------------------------------------------------------------------+
 bool IsTrendAligned(string sym, int idx, int direction)
@@ -1419,14 +1419,13 @@ bool IsTrendAligned(string sym, int idx, int direction)
    if(CopyBuffer(handleTrendMA[idx], 0, 0, 3, ma) < 3) return true;
 
    // MA[1]（直近確定足）vs MA[2]（その前）で傾きを判定
+   // 価格位置は問わず、MAの方向のみで判定（エクスパンション初動を逃さない）
    if(direction == 1) {
-      // Buy: MAが上昇中（価格がMA上にあり、MA自体が上向き）
-      double price = SymbolInfoDouble(sym, SYMBOL_BID);
-      return (price > ma[1] && ma[1] > ma[2]);
+      // Buy: MA上昇中（または横ばい=同値は許容）
+      return (ma[1] >= ma[2]);
    } else {
-      // Sell: MAが下降中（価格がMA下にあり、MA自体が下向き）
-      double price = SymbolInfoDouble(sym, SYMBOL_ASK);
-      return (price < ma[1] && ma[1] < ma[2]);
+      // Sell: MA下降中（または横ばい=同値は許容）
+      return (ma[1] <= ma[2]);
    }
 }
 

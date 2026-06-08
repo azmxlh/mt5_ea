@@ -34,6 +34,11 @@ input ENUM_TIMEFRAMES BB_TF      = PERIOD_H4;   // BB時間足
 input int      BB_Expand_Lookback = 8;          // エクスパンション判定の過去本数
 input double   BB_Body_Ratio     = 0.5;         // バンドタッチ足の実体/バンド幅比率(0=無効)
 
+//--- 安定エクスパンションフィルター（バンド幅が安定拡大中のみエントリー）
+input bool     StableExpand_Enabled  = true;    // 安定エクスパンションフィルター(有効/無効)
+input int      StableExpand_Bars     = 3;       // バンド幅が連続拡大している必要がある本数
+input double   StableExpand_MinGrowth = 0.0;    // 各バーの最小成長率(0=前バーより広ければOK)
+
 //--- ピラミッティング設定
 input double   Pyramid_Sigma     = 0.3;         // 追加エントリー間隔(σ単位) +1σ超えてさらに+0.3σごとに追加
 input double   LotHalving        = 0.5;         // ロット減少率
@@ -558,7 +563,7 @@ void CheckEntry(string sym, int magic, int idx)
    ArraySetAsSeries(bb_upper, true);
    ArraySetAsSeries(bb_lower, true);
 
-   int needBars = BB_Expand_Lookback + 3;
+   int needBars = BB_Expand_Lookback + StableExpand_Bars + 3;
    if(CopyBuffer(handleBB[idx], 0, 0, needBars, bb_mid) < needBars) return;
    if(CopyBuffer(handleBB[idx], 1, 0, needBars, bb_upper) < needBars) return;
    if(CopyBuffer(handleBB[idx], 2, 0, needBars, bb_lower) < needBars) return;
@@ -574,6 +579,23 @@ void CheckEntry(string sym, int magic, int idx)
    }
    avgWidth /= BB_Expand_Lookback;
    if(bandWidth1 <= avgWidth) return;  // エクスパンションなし → スキップ
+
+   // 安定エクスパンションフィルター: バンド幅が連続して拡大中であることを確認
+   // フェイクアウト防止 — 拡大→縮小→拡大を繰り返す不安定なボラ環境を回避
+   if(StableExpand_Enabled) {
+      bool stable = true;
+      for(int s = 1; s < StableExpand_Bars; s++) {
+         double bwCurrent = bb_upper[s] - bb_lower[s];
+         double bwPrev    = bb_upper[s + 1] - bb_lower[s + 1];
+         if(bwPrev <= 0) { stable = false; break; }
+         double growth = (bwCurrent - bwPrev) / bwPrev;
+         if(bwCurrent <= bwPrev || growth < StableExpand_MinGrowth) {
+            stable = false;
+            break;
+         }
+      }
+      if(!stable) return;  // バンド幅が安定拡大していない → スキップ
+   }
 
    // 実体サイズフィルター
    double bodySize = MathAbs(close1 - open1);

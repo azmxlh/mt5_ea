@@ -44,8 +44,13 @@ input double   Pyramid_Sigma     = 0.3;         // 追加エントリー間隔(�
 input double   LotHalving        = 0.5;         // ロット減少率
 input int      MaxPyramid        = 5;           // 最大追加回数(0=無制限)
 
+//--- リスクリワード自動TP/SL設定
+input bool     RiskReward_Enabled    = true;    // リスクリワードTP/SL自動設定(有効/無効)
+input double   RiskReward_Ratio      = 3.0;     // リスクリワード比(TP = SL × この値)
+input bool     RiskReward_SL_BB_Mid  = true;    // SLをBB中央線に設定(falseの場合は-1σ/+1σ)
+
 //--- 利確設定
-input double   TakeProfit_Equity_Pct = 15.0;    // エクイティが残高のこの%上回ったら全決済(0=無効)
+input double   TakeProfit_Equity_Pct = 30.0;    // エクイティが残高のこの%上回ったら全決済(0=無効)
 input double   TakeProfit_Pair_Pct   = 0;     // 通貨ペア単位の含み益が残高のこの%超えたらそのペア利確(0=無効)
 input double   StopLoss_Equity_Pct   = 0;       // エクイティが残高のこの%下回ったら全決済(0=無効)
 input double   StopLoss_Pair_Pct     = 0;       // 通貨ペア単位の含み損が残高のこの%超えたらそのペア決済(0=無効)
@@ -742,7 +747,10 @@ void CheckDelayedEntry(string sym, int magic, int idx)
    // すべてのフィルター通過 → エントリー実行
    double lot = CalcInitialLot(sym);
    ENUM_ORDER_TYPE orderType = (pendingDir == 1) ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
-   if(OpenOrder(sym, orderType, lot, magic, 0)) {
+   double rrSL = 0, rrTP = 0;
+   double entryPrice = (pendingDir == 1) ? SymbolInfoDouble(sym, SYMBOL_ASK) : SymbolInfoDouble(sym, SYMBOL_BID);
+   CalcRiskRewardSLTP(sym, idx, orderType, entryPrice, rrSL, rrTP);
+   if(OpenOrder(sym, orderType, lot, magic, rrSL, rrTP)) {
       PrintFormat("[BBSigma][%s] 遅延エントリー確定: %s σ=%.2f",
                  sym, (pendingDir == 1) ? "BUY" : "SELL", sigmaPos);
    }
@@ -814,7 +822,10 @@ void CheckEntry(string sym, int magic, int idx)
          if(MTF_Enabled && !IsMTFMomentumOK(sym, idx, 1)) return;
          if(Exposure_Enabled && IsExposureExceeded(sym, 1)) return;
          double lot = CalcInitialLot(sym);
-         OpenOrder(sym, ORDER_TYPE_BUY, lot, magic, 0);
+         double rrSL = 0, rrTP = 0;
+         double askPrice = SymbolInfoDouble(sym, SYMBOL_ASK);
+         CalcRiskRewardSLTP(sym, idx, ORDER_TYPE_BUY, askPrice, rrSL, rrTP);
+         OpenOrder(sym, ORDER_TYPE_BUY, lot, magic, rrSL, rrTP);
       }
       return;
    }
@@ -830,7 +841,10 @@ void CheckEntry(string sym, int magic, int idx)
          if(MTF_Enabled && !IsMTFMomentumOK(sym, idx, -1)) return;
          if(Exposure_Enabled && IsExposureExceeded(sym, -1)) return;
          double lot = CalcInitialLot(sym);
-         OpenOrder(sym, ORDER_TYPE_SELL, lot, magic, 0);
+         double rrSL = 0, rrTP = 0;
+         double bidPrice = SymbolInfoDouble(sym, SYMBOL_BID);
+         CalcRiskRewardSLTP(sym, idx, ORDER_TYPE_SELL, bidPrice, rrSL, rrTP);
+         OpenOrder(sym, ORDER_TYPE_SELL, lot, magic, rrSL, rrTP);
       }
       return;
    }
@@ -889,7 +903,11 @@ void CheckPyramid(string sym, int magic, int idx, int posCount)
    lot = MathMin(lot, SymbolInfoDouble(sym, SYMBOL_VOLUME_MAX));
    if(lot < minLot) return;
 
-   if(OpenOrder(sym, (direction == 1) ? ORDER_TYPE_BUY : ORDER_TYPE_SELL, lot, magic, 0)) {
+   ENUM_ORDER_TYPE pyramidType = (direction == 1) ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   double rrSL = 0, rrTP = 0;
+   double pyramidPrice = (direction == 1) ? SymbolInfoDouble(sym, SYMBOL_ASK) : SymbolInfoDouble(sym, SYMBOL_BID);
+   CalcRiskRewardSLTP(sym, idx, pyramidType, pyramidPrice, rrSL, rrTP);
+   if(OpenOrder(sym, pyramidType, lot, magic, rrSL, rrTP)) {
       PrintFormat("[BBSigma][%s] ピラミッド #%d: %.2f lots", sym, pyramidCount + 1, lot);
    }
 }
@@ -1054,17 +1072,87 @@ double CalcInitialLot(string sym)
 }
 
 //+------------------------------------------------------------------+
-bool OpenOrder(string sym, ENUM_ORDER_TYPE type, double lot, int magic, double sl)
+// リスクリワードベースのTP/SLを計算
+// 損切り: エントリー価格からBB中央線(またはBB±1σ)までの距離
+// 利確: 損切り幅 × リスクリワード比
+// 戻り値: sl, tp を参照渡しで返す
+//+------------------------------------------------------------------+
+void CalcRiskRewardSLTP(string sym, int idx, ENUM_ORDER_TYPE type, double entryPrice, double &sl, double &tp)
+{
+   sl = 0;
+   tp = 0;
+
+   if(!RiskReward_Enabled) return;
+
+   double bb_mid[], bb_upper[], bb_lower[];
+   ArraySetAsSeries(bb_mid, true);
+   ArraySetAsSeries(bb_upper, true);
+   ArraySetAsSeries(bb_lower, true);
+
+   if(CopyBuffer(handleBB[idx], 0, 0, 2, bb_mid) < 2) return;
+   if(CopyBuffer(handleBB[idx], 1, 0, 2, bb_upper) < 2) return;
+   if(CopyBuffer(handleBB[idx], 2, 0, 2, bb_lower) < 2) return;
+
+   int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+   double slDistance = 0;
+
+   if(type == ORDER_TYPE_BUY) {
+      // Buy: SLはBB中央線(または+1σの反対側=-1σ)
+      if(RiskReward_SL_BB_Mid)
+         sl = bb_mid[0];
+      else {
+         // -1σ = mid - (upper - mid)/2  → mid - sigma幅
+         double sigmaWidth = (bb_upper[0] - bb_mid[0]) / BB_Deviation;
+         sl = bb_mid[0] + sigmaWidth;  // +1σライン（Buyなので+1σ割れが損切り）
+      }
+
+      slDistance = entryPrice - sl;
+      if(slDistance <= 0) {
+         sl = 0;
+         return;  // SL距離が0以下ならTP/SLは設定しない
+      }
+      tp = entryPrice + slDistance * RiskReward_Ratio;
+   } else {
+      // Sell: SLはBB中央線(または-1σの反対側=+1σ)
+      if(RiskReward_SL_BB_Mid)
+         sl = bb_mid[0];
+      else {
+         double sigmaWidth = (bb_upper[0] - bb_mid[0]) / BB_Deviation;
+         sl = bb_mid[0] - sigmaWidth;  // -1σライン（Sellなので-1σ超えが損切り）
+      }
+
+      slDistance = sl - entryPrice;
+      if(slDistance <= 0) {
+         sl = 0;
+         return;  // SL距離が0以下ならTP/SLは設定しない
+      }
+      tp = entryPrice - slDistance * RiskReward_Ratio;
+   }
+
+   sl = NormalizeDouble(sl, digits);
+   tp = NormalizeDouble(tp, digits);
+
+   PrintFormat("[BBSigma][%s] RR設定: SL=%.5f (%.1fpips), TP=%.5f (%.1fpips), RR=1:%.1f",
+              sym, sl, slDistance / SymbolInfoDouble(sym, SYMBOL_POINT) / 10,
+              tp, slDistance * RiskReward_Ratio / SymbolInfoDouble(sym, SYMBOL_POINT) / 10,
+              RiskReward_Ratio);
+}
+
+//+------------------------------------------------------------------+
+bool OpenOrder(string sym, ENUM_ORDER_TYPE type, double lot, int magic, double sl, double tp = 0)
 {
    MqlTradeRequest req = {};
    MqlTradeResult  res = {};
+
+   int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
 
    req.action       = TRADE_ACTION_DEAL;
    req.symbol       = sym;
    req.volume       = lot;
    req.type         = type;
    req.price        = (type == ORDER_TYPE_BUY) ? SymbolInfoDouble(sym, SYMBOL_ASK) : SymbolInfoDouble(sym, SYMBOL_BID);
-   req.sl           = NormalizeDouble(sl, (int)SymbolInfoInteger(sym, SYMBOL_DIGITS));
+   req.sl           = NormalizeDouble(sl, digits);
+   req.tp           = NormalizeDouble(tp, digits);
    req.deviation    = 30;
    req.magic        = magic;
    req.comment      = "BBSigma";
@@ -1083,8 +1171,8 @@ bool OpenOrder(string sym, ENUM_ORDER_TYPE type, double lot, int magic, double s
       }
    }
 
-   PrintFormat("[BBSigma][%s] %s %.4f lots @ %.5f",
-              sym, (type == ORDER_TYPE_BUY) ? "BUY" : "SELL", lot, res.price);
+   PrintFormat("[BBSigma][%s] %s %.4f lots @ %.5f (SL=%.5f, TP=%.5f)",
+              sym, (type == ORDER_TYPE_BUY) ? "BUY" : "SELL", lot, res.price, sl, tp);
    return true;
 }
 

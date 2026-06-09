@@ -1,10 +1,10 @@
 //+------------------------------------------------------------------+
-//| MorningScalp.mq5 - 朝スキャルピングEA（MT5マルチペア版）V2      |
-//| 日本時間早朝のレンジ相場でRSI逆張り + 利益追従ロジック           |
-//| 改善: トレーリング/ブレイクイーブン/部分利確/動的TP/SL/ADXフィルター |
+//| MorningScalp.mq5 - 朝スキャルピングEA（MT5マルチペア版）V3      |
+//| 日本時間早朝のレンジ相場でRSI逆張り                              |
+//| V3: 損大利小問題を根本修正 - クールダウン/広SL/浅TP/厳格フィルター |
 //+------------------------------------------------------------------+
-#property copyright "MorningScalp EA V2"
-#property version   "2.00"
+#property copyright "MorningScalp EA V3"
+#property version   "3.00"
 #property strict
 
 //--- 通貨ペア設定
@@ -19,62 +19,71 @@ input double   FixedLot          = 0.1;
 input bool     MicroMode         = false;
 
 //--- RSI設定
-input int      RSIPeriod         = 6;
+input int      RSIPeriod         = 14;          // RSI期間※6→14に変更（安定化）
 input ENUM_APPLIED_PRICE RSIPrice = PRICE_CLOSE;
-input int      RSI_UpperLine     = 75;          // RSI上限（売りシグナル）※80→75に調整
-input int      RSI_LowerLine     = 25;          // RSI下限（買いシグナル）※20→25に調整
-input ENUM_TIMEFRAMES RSI_TF     = PERIOD_M5;   // RSI計算時間足
-input int      RSI_ConfirmBars   = 2;           // RSI確認本数（連続で閾値超え要求）
+input int      RSI_UpperLine     = 70;          // RSI上限（売りシグナル）※75→70
+input int      RSI_LowerLine     = 30;          // RSI下限（買いシグナル）※25→30
+input ENUM_TIMEFRAMES RSI_TF     = PERIOD_M15;  // RSI計算時間足※M5→M15（ノイズ軽減）
+input int      RSI_ConfirmBars   = 2;           // RSI確認本数
 
 //--- TP/SL設定（ATRベース）
 input bool     UseDynamicTPSL    = true;        // ATRベース動的TP/SLを使用
-input double   TP_ATR_Multi      = 1.5;         // TP = ATR × この倍率
-input double   SL_ATR_Multi      = 1.0;         // SL = ATR × この倍率
-input double   TakeProfit_Pips   = 15.0;        // 固定TP（動的TP未使用時）
-input double   LossCut_Pips      = 10.0;        // 固定SL（動的SL未使用時）※15→10に縮小
+input double   TP_ATR_Multi      = 0.8;         // TP = ATR × この倍率※1.5→0.8（浅く確実に利確）
+input double   SL_ATR_Multi      = 2.0;         // SL = ATR × この倍率※1.0→2.0（広く刈られにくく）
+input double   TakeProfit_Pips   = 10.0;        // 固定TP（動的TP未使用時）
+input double   LossCut_Pips      = 20.0;        // 固定SL（動的SL未使用時）※10→20
 
 //--- トレーリングストップ設定
 input bool     UseTrailing       = true;        // トレーリングストップを使用
-input double   TrailStart_Pips   = 8.0;         // トレーリング開始（含み益pips）
-input double   TrailStep_Pips    = 3.0;         // トレーリングステップ（pips）
+input double   TrailStart_Pips   = 5.0;         // トレーリング開始※8→5（早めに追従）
+input double   TrailStep_Pips    = 2.0;         // トレーリングステップ※3→2
 
 //--- ブレイクイーブン設定
 input bool     UseBreakEven      = true;        // ブレイクイーブンを使用
-input double   BE_Trigger_Pips   = 5.0;         // BEトリガー（含み益pips）
-input double   BE_Offset_Pips    = 1.0;         // BE時のオフセット（+1pipsで微益確保）
+input double   BE_Trigger_Pips   = 3.0;         // BEトリガー※5→3（早めに建値移動）
+input double   BE_Offset_Pips    = 0.5;         // BE時のオフセット※1→0.5
 
 //--- 部分利確設定
 input bool     UsePartialClose   = true;        // 部分利確を使用
-input double   Partial_Pips      = 10.0;        // 部分利確トリガー（含み益pips）
+input double   Partial_Pips      = 6.0;         // 部分利確トリガー※10→6
 input double   Partial_Percent   = 50.0;        // 部分利確割合（%）
 
 //--- 取引時間設定（サーバー時間）
-input int      TradeStartHour    = 21;          // 取引開始時間（XMサーバー時間 21=日本時間4時頃）
-input int      TradeEndHour      = 1;           // 取引終了時間（XMサーバー時間 1=日本時間8時頃）
+input int      TradeStartHour    = 21;          // 取引開始時間
+input int      TradeEndHour      = 1;           // 取引終了時間
 
 //--- リスク管理
-input double   MaxSpread_Pips    = 2.5;         // 最大スプレッド※3→2.5に縮小
+input double   MaxSpread_Pips    = 2.0;         // 最大スプレッド※2.5→2.0
 input int      MaxPosPerPair     = 1;
-input int      MaxTotalPositions = 7;
+input int      MaxTotalPositions = 5;           // 最大同時ポジション※7→5
 
-//--- ATRフィルター（高ボラ日はエントリーしない）
+//--- ATRフィルター
 input bool     UseATRFilter      = true;
 input int      ATR_Period        = 14;
-input ENUM_TIMEFRAMES ATR_TF     = PERIOD_H1;   // ATR計算時間足※D1→H1に変更（より敏感に）
-input double   ATR_Threshold     = 1.5;
+input ENUM_TIMEFRAMES ATR_TF     = PERIOD_D1;   // ATR計算時間足※H1→D1に戻す（SLに余裕）
+input double   ATR_Threshold     = 1.3;         // ATR倍率閾値※1.5→1.3（厳格化）
 
 //--- ADXフィルター（レンジ確認）
-input bool     UseADXFilter      = true;        // ADXフィルターを使用
-input int      ADX_Period        = 14;          // ADX期間
-input ENUM_TIMEFRAMES ADX_TF     = PERIOD_M15;  // ADX計算時間足
-input double   ADX_MaxLevel      = 25.0;        // ADXがこの値以下ならレンジ判定
+input bool     UseADXFilter      = true;
+input int      ADX_Period        = 14;
+input ENUM_TIMEFRAMES ADX_TF     = PERIOD_M30;  // ADX計算時間足※M15→M30
+input double   ADX_MaxLevel      = 20.0;        // ADXがこの値以下ならレンジ※25→20（厳格化）
 
-//--- 金曜スキップ（週末ギャップ対策）
+//--- クールダウン設定（再エントリー暴走防止）
+input bool     UseCooldown       = true;        // クールダウンを使用
+input int      CooldownMinutes   = 60;          // SL後の再エントリー禁止時間（分）※重要
+
+//--- ボリンジャーバンドフィルター（レンジ幅確認）
+input bool     UseBBFilter       = true;        // BBフィルターを使用
+input int      BB_Period         = 20;          // BB期間
+input double   BB_MaxWidth_Pips  = 30.0;        // BB幅がこの値以下ならレンジ（pips）
+
+//--- 金曜スキップ
 input bool     SkipFriday        = true;
 
 //--- 連敗制限
 input bool     UseLossLimit      = true;
-input int      MaxLossPerPairDay = 2;
+input int      MaxLossPerPairDay = 2;           // 1ペア1日あたりの最大負け回数
 
 //--- 許可口座
 input string   AllowedAccounts   = "";
@@ -85,8 +94,10 @@ int    pairCount;
 int    handleRSI[];
 int    handleATR[];
 int    handleADX[];
+int    handleBB[];
 bool   pairEnabled[];
-bool   partialClosed[];        // 部分利確済みフラグ（ポジションごと）
+bool   partialClosed[];
+datetime lastLossTime[];         // 各ペアの最後のSL時刻（クールダウン用）
 
 //+------------------------------------------------------------------+
 double GetMinLot() { return MicroMode ? 0.1 : 0.01; }
@@ -102,14 +113,17 @@ int OnInit()
    ArrayResize(handleRSI, pairCount);
    ArrayResize(handleATR, pairCount);
    ArrayResize(handleADX, pairCount);
+   ArrayResize(handleBB, pairCount);
    ArrayResize(pairEnabled, pairCount);
    ArrayResize(partialClosed, pairCount);
+   ArrayResize(lastLossTime, pairCount);
 
    int enabledCount = 0;
    for(int i = 0; i < pairCount; i++) {
       StringTrimRight(pairs[i]);
       StringTrimLeft(pairs[i]);
       partialClosed[i] = false;
+      lastLossTime[i] = 0;
       if(!SymbolSelect(pairs[i], true)) { pairEnabled[i] = false; continue; }
 
       handleRSI[i] = iRSI(pairs[i], RSI_TF, RSIPeriod, RSIPrice);
@@ -125,14 +139,21 @@ int OnInit()
          handleADX[i] = INVALID_HANDLE;
       }
 
+      if(UseBBFilter) {
+         handleBB[i] = iBands(pairs[i], RSI_TF, BB_Period, 0, 2.0, PRICE_CLOSE);
+         if(handleBB[i] == INVALID_HANDLE) { pairEnabled[i] = false; continue; }
+      } else {
+         handleBB[i] = INVALID_HANDLE;
+      }
+
       pairEnabled[i] = true;
       enabledCount++;
    }
 
    if(enabledCount == 0) return INIT_FAILED;
-   PrintFormat("[MorningScalp V2] 初期化: %d/%d pairs, RSI(%d)x%d bars, ADX<%0.f, Time=%d-%d",
+   PrintFormat("[MorningScalp V3] 初期化: %d/%d pairs, RSI(%d)x%d, ADX<%0.f, CD=%dmin",
               enabledCount, pairCount, RSIPeriod, RSI_ConfirmBars,
-              ADX_MaxLevel, TradeStartHour, TradeEndHour);
+              ADX_MaxLevel, CooldownMinutes);
    return INIT_SUCCEEDED;
 }
 
@@ -143,14 +164,18 @@ void OnDeinit(const int reason)
       if(handleRSI[i] != INVALID_HANDLE) IndicatorRelease(handleRSI[i]);
       if(handleATR[i] != INVALID_HANDLE) IndicatorRelease(handleATR[i]);
       if(handleADX[i] != INVALID_HANDLE) IndicatorRelease(handleADX[i]);
+      if(handleBB[i] != INVALID_HANDLE) IndicatorRelease(handleBB[i]);
    }
 }
 
 //+------------------------------------------------------------------+
 void OnTick()
 {
-   // 既存ポジションの管理（時間外でも実行 → 利益を逃さない）
+   // 既存ポジションの管理（時間外でも実行）
    ManagePositions();
+
+   // クールダウン時刻の更新（SLヒット検出）
+   UpdateCooldownTimes();
 
    // 取引時間チェック（新規エントリーのみ制限）
    if(!IsTradingTime()) return;
@@ -169,9 +194,77 @@ void OnTick()
       if(UseLossLimit && IsDailyLossLimitHit(i)) continue;
       if(UseATRFilter && IsHighVolatility(i)) continue;
       if(UseADXFilter && !IsRangeMarket(i)) continue;
+      if(UseBBFilter && !IsNarrowBB(i)) continue;
+      if(UseCooldown && IsCooldownActive(i)) continue;
 
       CheckEntry(sym, magic, i);
    }
+}
+
+//+------------------------------------------------------------------+
+// クールダウン: 直近のSLヒットを検出して時刻を記録
+//+------------------------------------------------------------------+
+void UpdateCooldownTimes()
+{
+   if(!UseCooldown) return;
+
+   for(int i = 0; i < pairCount; i++) {
+      if(!pairEnabled[i]) continue;
+      int magic = MagicBase + i;
+      string sym = pairs[i];
+
+      // 当日の履歴を確認
+      MqlDateTime dt;
+      TimeToStruct(TimeCurrent(), dt);
+      dt.hour = 0; dt.min = 0; dt.sec = 0;
+      datetime dayStart = StructToTime(dt);
+
+      HistorySelect(dayStart, TimeCurrent());
+      int total = HistoryDealsTotal();
+
+      for(int j = total - 1; j >= 0; j--) {
+         ulong ticket = HistoryDealGetTicket(j);
+         if(ticket == 0) continue;
+         if(HistoryDealGetInteger(ticket, DEAL_MAGIC) != magic) continue;
+         if(HistoryDealGetString(ticket, DEAL_SYMBOL) != sym) continue;
+         if(HistoryDealGetInteger(ticket, DEAL_ENTRY) != DEAL_ENTRY_OUT) continue;
+         if(HistoryDealGetDouble(ticket, DEAL_PROFIT) < 0) {
+            datetime dealTime = (datetime)HistoryDealGetInteger(ticket, DEAL_TIME);
+            if(dealTime > lastLossTime[i]) {
+               lastLossTime[i] = dealTime;
+            }
+            break; // 最新の負けだけ確認
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+bool IsCooldownActive(int idx)
+{
+   if(lastLossTime[idx] == 0) return false;
+   return (TimeCurrent() - lastLossTime[idx] < CooldownMinutes * 60);
+}
+
+//+------------------------------------------------------------------+
+// ボリンジャーバンド幅フィルター: バンド幅が狭い=レンジ
+//+------------------------------------------------------------------+
+bool IsNarrowBB(int idx)
+{
+   if(handleBB[idx] == INVALID_HANDLE) return true;
+
+   double upper[], lower[];
+   ArraySetAsSeries(upper, true);
+   ArraySetAsSeries(lower, true);
+
+   if(CopyBuffer(handleBB[idx], 1, 1, 1, upper) < 1) return true; // Upper band
+   if(CopyBuffer(handleBB[idx], 2, 1, 1, lower) < 1) return true; // Lower band
+
+   double point = SymbolInfoDouble(pairs[idx], SYMBOL_POINT);
+   double pipValue = point * 10;
+   double bbWidth = (upper[0] - lower[0]) / pipValue;
+
+   return (bbWidth <= BB_MaxWidth_Pips);
 }
 
 //+------------------------------------------------------------------+
@@ -290,7 +383,6 @@ double CalcPartialLot(double volume, string sym)
    double minLot   = SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN);
    closeLot = MathFloor(closeLot / stepLot) * stepLot;
 
-   // 残りロットが最小ロット未満にならないようチェック
    double remaining = volume - closeLot;
    if(remaining < minLot) return 0;
    if(closeLot < minLot) return 0;
@@ -303,9 +395,7 @@ void PartialClose(ulong ticket, double closeLot, string sym)
 {
    MqlTradeRequest req = {};
    MqlTradeResult  res = {};
-   int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
 
-   // ポジション情報を取得
    if(!PositionSelectByTicket(ticket)) return;
    long posType = PositionGetInteger(POSITION_TYPE);
 
@@ -345,8 +435,6 @@ bool IsFriday()
 }
 
 //+------------------------------------------------------------------+
-// ADXフィルター: ADXが閾値以下ならレンジ=トレードOK
-//+------------------------------------------------------------------+
 bool IsRangeMarket(int idx)
 {
    if(handleADX[idx] == INVALID_HANDLE) return true;
@@ -358,8 +446,6 @@ bool IsRangeMarket(int idx)
    return (adx[0] < ADX_MaxLevel);
 }
 
-//+------------------------------------------------------------------+
-// ATRフィルター: 当日ATRが直近平均の閾値倍を超えたらスキップ
 //+------------------------------------------------------------------+
 bool IsHighVolatility(int idx)
 {
@@ -378,8 +464,6 @@ bool IsHighVolatility(int idx)
    return (currentATR > avgATR * ATR_Threshold);
 }
 
-//+------------------------------------------------------------------+
-// ATR値を取得（動的TP/SL計算用）
 //+------------------------------------------------------------------+
 double GetATRValue(int idx)
 {
@@ -403,7 +487,7 @@ void CheckEntry(string sym, int magic, int idx)
    ArraySetAsSeries(rsi, true);
    if(CopyBuffer(handleRSI[idx], 0, 1, RSI_ConfirmBars, rsi) < RSI_ConfirmBars) return;
 
-   // RSI確認: 全本数が閾値を超えていることを要求（ダマシ排除）
+   // RSI確認: 全本数が閾値を超えていることを要求
    bool buySignal = true;
    bool sellSignal = true;
    for(int k = 0; k < RSI_ConfirmBars; k++) {
@@ -416,22 +500,20 @@ void CheckEntry(string sym, int magic, int idx)
    if(UseDynamicTPSL) {
       double atrVal = GetATRValue(idx);
       if(atrVal <= 0) return;
-      // ATRをpipsに変換
       double atr_pips = atrVal / pipValue;
       tp_pips = atr_pips * TP_ATR_Multi;
       sl_pips = atr_pips * SL_ATR_Multi;
-      // 最低値を設定（あまりに小さいTP/SLは避ける）
-      tp_pips = MathMax(tp_pips, 5.0);
-      sl_pips = MathMax(sl_pips, 3.0);
-      // 最大値も制限（リスク管理）
-      tp_pips = MathMin(tp_pips, 30.0);
-      sl_pips = MathMin(sl_pips, 20.0);
+      // 最低値・最大値を制限
+      tp_pips = MathMax(tp_pips, 3.0);
+      sl_pips = MathMax(sl_pips, 10.0);
+      tp_pips = MathMin(tp_pips, 20.0);
+      sl_pips = MathMin(sl_pips, 40.0);
    } else {
       tp_pips = TakeProfit_Pips;
       sl_pips = LossCut_Pips;
    }
 
-   // === Buy: RSIが下限以下を連続確認 ===
+   // === Buy ===
    if(buySignal) {
       double ask = SymbolInfoDouble(sym, SYMBOL_ASK);
       double slPrice = NormalizeDouble(ask - sl_pips * pipValue, digits);
@@ -439,13 +521,13 @@ void CheckEntry(string sym, int magic, int idx)
 
       double lot = CalcLot(sym);
       if(OpenOrder(sym, ORDER_TYPE_BUY, lot, magic, slPrice, tpPrice)) {
-         PrintFormat("[MorningScalp] BUY %s lot=%.2f RSI=%.1f TP=%.1f SL=%.1f pips",
+         PrintFormat("[MorningScalp V3] BUY %s lot=%.2f RSI=%.1f TP=%.1f SL=%.1f",
                     sym, lot, rsi[0], tp_pips, sl_pips);
       }
       return;
    }
 
-   // === Sell: RSIが上限以上を連続確認 ===
+   // === Sell ===
    if(sellSignal) {
       double bid = SymbolInfoDouble(sym, SYMBOL_BID);
       double slPrice = NormalizeDouble(bid + sl_pips * pipValue, digits);
@@ -453,7 +535,7 @@ void CheckEntry(string sym, int magic, int idx)
 
       double lot = CalcLot(sym);
       if(OpenOrder(sym, ORDER_TYPE_SELL, lot, magic, slPrice, tpPrice)) {
-         PrintFormat("[MorningScalp] SELL %s lot=%.2f RSI=%.1f TP=%.1f SL=%.1f pips",
+         PrintFormat("[MorningScalp V3] SELL %s lot=%.2f RSI=%.1f TP=%.1f SL=%.1f",
                     sym, lot, rsi[0], tp_pips, sl_pips);
       }
       return;
@@ -561,8 +643,6 @@ ENUM_ORDER_TYPE_FILLING GetFillingMode(string sym)
    return ORDER_FILLING_RETURN;
 }
 
-//+------------------------------------------------------------------+
-// 1日あたりの負け回数を確認
 //+------------------------------------------------------------------+
 bool IsDailyLossLimitHit(int idx)
 {

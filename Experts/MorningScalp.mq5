@@ -372,7 +372,9 @@ void ModifySL(ulong ticket, double newSL, double tp, string sym)
    req.sl        = NormalizeDouble(newSL, digits);
    req.tp        = NormalizeDouble(tp, digits);
 
-   OrderSend(req, res);
+   if(!OrderSend(req, res)) {
+      // SL変更失敗（許容）
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -410,7 +412,9 @@ void PartialClose(ulong ticket, double closeLot, string sym)
    req.comment      = "MornScalp_Partial";
    req.type_filling = GetFillingMode(sym);
 
-   OrderSend(req, res);
+   if(!OrderSend(req, res)) {
+      // 部分利確失敗（許容）
+   }
 }
 
 //+------------------------------------------------------------------+

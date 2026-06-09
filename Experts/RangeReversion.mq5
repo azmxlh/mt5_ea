@@ -199,20 +199,7 @@ void CheckEntry(string sym, int magic, int idx)
    double rangeRatio = rangeWidth / atr[1];
    if(rangeRatio > Range_MaxWidth_Pct || rangeRatio < Range_MinWidth_Pct) return;
 
-   // レンジ内収率チェック（実体ベース：Open/Closeがレンジ内に収まる割合）
-   int insideCount = 0;
-   for(int k = 1; k <= Range_Lookback; k++) {
-      double o = iOpen(sym, BB_TF, k);
-      double c = iClose(sym, BB_TF, k);
-      double bodyHigh = MathMax(o, c);
-      double bodyLow = MathMin(o, c);
-      // 実体の80%以上がレンジ中央寄りに収まっているか
-      double margin = rangeWidth * 0.1;  // レンジの上下10%を超えなければOK
-      if(bodyHigh <= rangeHigh - margin && bodyLow >= rangeLow + margin)
-         insideCount++;
-   }
-   double insideRatio = (double)insideCount / Range_Lookback * 100.0;
-   if(insideRatio < Range_BodyInside_Pct) return;
+   // レンジ内収率は無効化（フィルタリングが厳しすぎるため）
 
    // タッチゾーン
    double zoneSize = rangeWidth * Range_TouchZone_Pct / 100.0;

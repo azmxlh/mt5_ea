@@ -49,7 +49,9 @@ input ENUM_TIMEFRAMES ADXFilter_TF = PERIOD_H4; // ADX判定の時間足
 
 //--- エントリー条件
 input double   BB_Touch_Margin  = 0.0;          // バンドタッチ判定のマージン（pips, 0=厳密にタッチ）
-input bool     RequireReversal  = true;        // 反転足確認（ヒゲでタッチ→実体が戻る足）
+input bool     RequireReversal  = true;         // 反転足確認（ヒゲでタッチ→実体が戻る足）
+input bool     AllowNearTouch   = true;         // ニアタッチ許可（バンドに近づいた足も反転判定対象）
+input double   NearTouch_Sigma  = 1.7;          // ニアタッチ判定のσ閾値（2.0σ未満でもこの値以上ならOK）
 
 //--- リスク管理
 input double   MaxSpread_Pips   = 3.0;
@@ -276,6 +278,11 @@ void CheckEntry(string sym, int magic, int idx)
    if(RequireReversal) {
       // ヒゲが-2σ以下にタッチし、実体は-2σの上で引ける（反転足）
       buyTouch = (low1 <= bb_lower[1] + touchMargin) && (close1 > bb_lower[1]);
+      // ニアタッチ: ヒゲが-1.7σ以下まで到達し、実体が戻った足もOK
+      if(!buyTouch && AllowNearTouch) {
+         double nearLevel = bb_mid[1] - sigmaWidth * NearTouch_Sigma;
+         buyTouch = (low1 <= nearLevel + touchMargin) && (close1 > nearLevel) && (close1 > open1);
+      }
    } else {
       // 終値が-2σ以下にタッチ
       buyTouch = (close1 <= bb_lower[1] + touchMargin);
@@ -318,6 +325,11 @@ void CheckEntry(string sym, int magic, int idx)
    if(RequireReversal) {
       // ヒゲが+2σ以上にタッチし、実体は+2σの下で引ける（反転足）
       sellTouch = (high1 >= bb_upper[1] - touchMargin) && (close1 < bb_upper[1]);
+      // ニアタッチ: ヒゲが+1.7σ以上まで到達し、実体が戻った足もOK
+      if(!sellTouch && AllowNearTouch) {
+         double nearLevel = bb_mid[1] + sigmaWidth * NearTouch_Sigma;
+         sellTouch = (high1 >= nearLevel - touchMargin) && (close1 < nearLevel) && (close1 < open1);
+      }
    } else {
       // 終値が+2σ以上にタッチ
       sellTouch = (close1 >= bb_upper[1] - touchMargin);

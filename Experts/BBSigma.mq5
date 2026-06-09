@@ -115,6 +115,7 @@ input int      WinRateFilter_Pause_Hours = 168; // 停止期間(時間) 168=1週
 input bool     LotReduce_Enabled     = true;    // ロット縮小モード(有効/無効)
 input int      LotReduce_Trades      = 4;       // 直近何トレードで判定するか
 input double   LotReduce_Trigger_Pct = 50.0;    // 勝率がこの%未満で最小ロットに切替
+input double   LotReduce_Recover_Pct = 75.0;    // 勝率がこの%以上で通常ロットに復帰
 
 //--- 通貨エクスポージャー制限
 input bool     Exposure_Enabled  = true;        // 通貨エクスポージャー制限（同一通貨への偏り防止）
@@ -198,6 +199,7 @@ int    g_recentResults[];     // 直近トレード結果(1=勝ち, 0=負け)
 int    g_recentResultCount;   // 記録済みトレード数
 datetime g_winRatePauseTime;  // 勝率停止が発動した時刻
 int    g_resultCountAtPause;  // 停止発動時のトレード数（再開後の再判定防止用）
+bool   g_lotReduceActive = false;  // ロット縮小中フラグ（ヒステリシス用）
 
 //+------------------------------------------------------------------+
 double GetMinLot()
@@ -255,7 +257,7 @@ void SaveTradeState()
       return;
    }
 
-   FileWrite(handle, g_recentResultCount);
+   FileWrite(handle, g_recentResultCount, (int)g_lotReduceActive);
    int count = MathMin(g_recentResultCount, WinRateFilter_Trades);
    for(int i = 0; i < count; i++) {
       FileWrite(handle, g_recentResults[i]);
@@ -281,9 +283,10 @@ void RestoreTradeHistory()
       return;
    }
 
-   // 1行目: resultCount
+   // 1行目: resultCount, lotReduceActive
    if(FileIsEnding(handle)) { FileClose(handle); return; }
    int savedCount = (int)FileReadNumber(handle);
+   int savedLotReduce = (int)FileReadNumber(handle);
 
    // 2行目以降: 各トレード結果
    ArrayInitialize(g_recentResults, 0);
@@ -298,6 +301,9 @@ void RestoreTradeHistory()
 
    FileClose(handle);
 
+   // ロット縮小状態を復元
+   g_lotReduceActive = (savedLotReduce != 0);
+
    // ログ出力
    int wins = 0;
    int count = MathMin(g_recentResultCount, WinRateFilter_Trades);
@@ -305,7 +311,8 @@ void RestoreTradeHistory()
       wins += g_recentResults[i];
    }
    double winRate = (count > 0) ? (double)wins / count * 100.0 : 100.0;
-   PrintFormat("[BBSigma] 状態復元: 直近%d件, 勝率%.0f%%", count, winRate);
+   PrintFormat("[BBSigma] 状態復元: 直近%d件, 勝率%.0f%%, ロット縮小=%s",
+              count, winRate, g_lotReduceActive ? "ON" : "OFF");
 }
 
 //+------------------------------------------------------------------+
@@ -1172,7 +1179,7 @@ void ClosePosition(ulong ticket, string sym, int magic)
 //+------------------------------------------------------------------+
 double CalcInitialLot(string sym)
 {
-   // ロット縮小モード: 直近勝率が低ければ最小ロットを返す
+   // ロット縮小モード: 直近勝率が低ければ最小ロットを返す（ヒステリシス付き）
    if(LotReduce_Enabled && g_recentResultCount >= LotReduce_Trades) {
       int wins = 0;
       for(int i = 0; i < LotReduce_Trades; i++) {
@@ -1181,10 +1188,17 @@ double CalcInitialLot(string sym)
          wins += g_recentResults[idx];
       }
       double winRate = (double)wins / LotReduce_Trades * 100.0;
-      if(winRate < LotReduce_Trigger_Pct) {
+
+      if(!g_lotReduceActive && winRate < LotReduce_Trigger_Pct) {
+         g_lotReduceActive = true;
+         PrintFormat("[BBSigma] ロット縮小発動: 勝率%.0f%% < %.0f%%", winRate, LotReduce_Trigger_Pct);
+      } else if(g_lotReduceActive && winRate >= LotReduce_Recover_Pct) {
+         g_lotReduceActive = false;
+         PrintFormat("[BBSigma] ロット縮小解除: 勝率%.0f%% >= %.0f%%", winRate, LotReduce_Recover_Pct);
+      }
+
+      if(g_lotReduceActive) {
          double minLot = GetMinLot();
-         PrintFormat("[BBSigma] ロット縮小中: 勝率%.0f%% < %.0f%% → %.2f lots",
-                    winRate, LotReduce_Trigger_Pct, minLot);
          return minLot;
       }
    }

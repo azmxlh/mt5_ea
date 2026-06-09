@@ -195,9 +195,9 @@ void CheckEntry(string sym, int magic, int idx)
    double rangeWidth = rangeHigh - rangeLow;
    if(rangeWidth <= 0) return;
 
-   // ATR正規化によるレンジ幅チェック
-   double rangeRatio = rangeWidth / atr[1];
-   if(rangeRatio > Range_MaxWidth_Pct || rangeRatio < Range_MinWidth_Pct) return;
+   // レンジ幅をpipsでチェック（ATR正規化は無効化）
+   double rangeWidthPips = rangeWidth / pipValue;
+   if(rangeWidthPips > 200.0 || rangeWidthPips < 20.0) return;
 
    // レンジ内収率は無効化（フィルタリングが厳しすぎるため）
 

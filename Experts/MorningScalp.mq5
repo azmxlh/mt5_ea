@@ -38,6 +38,15 @@ input double   MaxSpread_Pips    = 3.0;
 input int      MaxPosPerPair     = 1;
 input int      MaxTotalPositions = 7;
 
+//--- ATRフィルター（高ボラ日はエントリーしない）
+input bool     UseATRFilter      = true;        // ATRフィルターを使用
+input int      ATR_Period        = 14;          // ATR期間
+input ENUM_TIMEFRAMES ATR_TF     = PERIOD_D1;   // ATR計算時間足
+input double   ATR_Threshold     = 1.5;         // ATR倍率閾値（ATR > 平均ATR×この値ならスキップ）
+
+//--- 金曜スキップ（週末ギャップ対策）
+input bool     SkipFriday        = true;        // 金曜日の新規エントリーを停止
+
 //--- 連敗制限
 input bool     UseLossLimit      = true;        // 1日あたり連敗制限を使用
 input int      MaxLossPerPairDay = 2;            // 1ペア1日あたりの最大負け回数
@@ -49,6 +58,7 @@ input string   AllowedAccounts   = "";
 string pairs[];
 int    pairCount;
 int    handleRSI[];
+int    handleATR[];
 bool   pairEnabled[];
 
 //+------------------------------------------------------------------+
@@ -63,6 +73,7 @@ int OnInit()
    if(pairCount <= 0) return INIT_FAILED;
 
    ArrayResize(handleRSI, pairCount);
+   ArrayResize(handleATR, pairCount);
    ArrayResize(pairEnabled, pairCount);
 
    int enabledCount = 0;
@@ -73,6 +84,13 @@ int OnInit()
 
       handleRSI[i] = iRSI(pairs[i], RSI_TF, RSIPeriod, RSIPrice);
       if(handleRSI[i] == INVALID_HANDLE) { pairEnabled[i] = false; continue; }
+
+      if(UseATRFilter) {
+         handleATR[i] = iATR(pairs[i], ATR_TF, ATR_Period);
+         if(handleATR[i] == INVALID_HANDLE) { pairEnabled[i] = false; continue; }
+      } else {
+         handleATR[i] = INVALID_HANDLE;
+      }
 
       pairEnabled[i] = true;
       enabledCount++;
@@ -88,8 +106,10 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
-   for(int i = 0; i < pairCount; i++)
+   for(int i = 0; i < pairCount; i++) {
       if(handleRSI[i] != INVALID_HANDLE) IndicatorRelease(handleRSI[i]);
+      if(handleATR[i] != INVALID_HANDLE) IndicatorRelease(handleATR[i]);
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -97,6 +117,9 @@ void OnTick()
 {
    // 取引時間チェック
    if(!IsTradingTime()) return;
+
+   // 金曜スキップ
+   if(SkipFriday && IsFriday()) return;
 
    for(int i = 0; i < pairCount; i++) {
       if(!pairEnabled[i]) continue;
@@ -107,6 +130,7 @@ void OnTick()
       if(CountPositions(sym, magic) >= MaxPosPerPair) continue;
       if(MaxTotalPositions > 0 && CountAllPositions() >= MaxTotalPositions) continue;
       if(UseLossLimit && IsDailyLossLimitHit(i)) continue;
+      if(UseATRFilter && IsHighVolatility(i)) continue;
 
       CheckEntry(sym, magic, i);
    }
@@ -123,6 +147,39 @@ bool IsTradingTime()
       return (h >= TradeStartHour && h < TradeEndHour);
    else
       return (h >= TradeStartHour || h < TradeEndHour);
+}
+
+//+------------------------------------------------------------------+
+bool IsFriday()
+{
+   MqlDateTime dt;
+   TimeToStruct(TimeCurrent(), dt);
+   return (dt.day_of_week == 5);
+}
+
+//+------------------------------------------------------------------+
+// ATRフィルター: 当日ATRが直近平均の閾値倍を超えたらスキップ
+//+------------------------------------------------------------------+
+bool IsHighVolatility(int idx)
+{
+   if(handleATR[idx] == INVALID_HANDLE) return false;
+
+   // 直近21日分のATRを取得（1本目=昨日確定、2-21本目=過去）
+   double atr[];
+   ArraySetAsSeries(atr, true);
+   if(CopyBuffer(handleATR[idx], 0, 1, 21, atr) < 21) return false;
+
+   // 昨日のATR
+   double currentATR = atr[0];
+
+   // 過去20日の平均ATR（2-21本目）
+   double sum = 0;
+   for(int i = 1; i < 21; i++) sum += atr[i];
+   double avgATR = sum / 20.0;
+
+   // 閾値判定
+   if(avgATR <= 0) return false;
+   return (currentATR > avgATR * ATR_Threshold);
 }
 
 //+------------------------------------------------------------------+

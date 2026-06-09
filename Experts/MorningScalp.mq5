@@ -39,7 +39,7 @@ input int      MaxPosPerPair     = 1;
 input int      MaxTotalPositions = 7;
 
 //--- 連敗制限
-input bool     UseLossLimit      = false;        // 1日あたり連敗制限を使用
+input bool     UseLossLimit      = true;        // 1日あたり連敗制限を使用
 input int      MaxLossPerPairDay = 2;            // 1ペア1日あたりの最大負け回数
 
 //--- 許可口座
@@ -50,8 +50,6 @@ string pairs[];
 int    pairCount;
 int    handleRSI[];
 bool   pairEnabled[];
-int    dailyLossCount[];  // ペアごとの当日負け回数
-int    lastLossDay[];     // 最後にリセットした日
 
 //+------------------------------------------------------------------+
 double GetMinLot() { return MicroMode ? 0.1 : 0.01; }
@@ -66,15 +64,11 @@ int OnInit()
 
    ArrayResize(handleRSI, pairCount);
    ArrayResize(pairEnabled, pairCount);
-   ArrayResize(dailyLossCount, pairCount);
-   ArrayResize(lastLossDay, pairCount);
 
    int enabledCount = 0;
    for(int i = 0; i < pairCount; i++) {
       StringTrimRight(pairs[i]);
       StringTrimLeft(pairs[i]);
-      dailyLossCount[i] = 0;
-      lastLossDay[i] = 0;
       if(!SymbolSelect(pairs[i], true)) { pairEnabled[i] = false; continue; }
 
       handleRSI[i] = iRSI(pairs[i], RSI_TF, RSIPeriod, RSIPrice);
@@ -270,34 +264,20 @@ ENUM_ORDER_TYPE_FILLING GetFillingMode(string sym)
 }
 
 //+------------------------------------------------------------------+
-// 1日あたりの負け回数を確認・更新
+// 1日あたりの負け回数を確認
 //+------------------------------------------------------------------+
 bool IsDailyLossLimitHit(int idx)
 {
-   MqlDateTime dt;
-   TimeToStruct(TimeCurrent(), dt);
-   int today = dt.day_of_year;
-
-   // 日付が変わったらリセット
-   if(lastLossDay[idx] != today) {
-      dailyLossCount[idx] = 0;
-      lastLossDay[idx] = today;
-      // 当日の負け回数を履歴から数える
-      CountTodayLosses(idx, today);
-   }
-
-   return (dailyLossCount[idx] >= MaxLossPerPairDay);
-}
-
-//+------------------------------------------------------------------+
-// 当日の負けトレードを履歴から数える
-//+------------------------------------------------------------------+
-void CountTodayLosses(int idx, int todayDOY)
-{
    int magic = MagicBase + idx;
    string sym = pairs[idx];
-   datetime dayStart = TimeCurrent() - (datetime)(TimeCurrent() % 86400);
 
+   // 当日0時（サーバー時間）を計算
+   MqlDateTime dt;
+   TimeToStruct(TimeCurrent(), dt);
+   dt.hour = 0; dt.min = 0; dt.sec = 0;
+   datetime dayStart = StructToTime(dt);
+
+   // 当日の履歴を取得して負け数を数える
    HistorySelect(dayStart, TimeCurrent());
    int total = HistoryDealsTotal();
    int losses = 0;
@@ -310,6 +290,7 @@ void CountTodayLosses(int idx, int todayDOY)
       if(HistoryDealGetInteger(ticket, DEAL_ENTRY) != DEAL_ENTRY_OUT) continue;
       if(HistoryDealGetDouble(ticket, DEAL_PROFIT) < 0) losses++;
    }
-   dailyLossCount[idx] = losses;
+
+   return (losses >= MaxLossPerPairDay);
 }
 //+------------------------------------------------------------------+

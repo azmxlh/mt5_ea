@@ -42,12 +42,12 @@ input double   StableExpand_MinGrowth = 0.0;    // 各バーの最小成長率(0
 //--- ピラミッティング設定
 input double   Pyramid_Sigma     = 0.3;         // 追加エントリー間隔(σ単位) +1σ超えてさらに+0.3σごとに追加
 input double   LotHalving        = 0.5;         // ロット減少率
-input int      MaxPyramid        = 5;           // 最大追加回数(0=無制限)
+input int      MaxPyramid        = 3;           // 最大追加回数(0=無制限)
 
 //--- リスクリワード自動TP/SL設定
 input bool     RiskReward_Enabled    = true;    // リスクリワードTP/SL自動設定(有効/無効)
 input double   RiskReward_Ratio      = 3.0;     // リスクリワード比(TP = SL × この値)
-input bool     RiskReward_SL_BB_Mid  = true;    // SLをBB中央線に設定(falseの場合は-1σ/+1σ)
+input bool     RiskReward_SL_BB_Mid  = false;    // SLをBB中央線に設定(falseの場合は-1σ/+1σ)
 
 //--- 利確設定
 input double   TakeProfit_Equity_Pct = 30.0;    // エクイティが残高のこの%上回ったら全決済(0=無効)

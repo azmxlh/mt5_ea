@@ -38,6 +38,10 @@ input double   MaxSpread_Pips    = 3.0;
 input int      MaxPosPerPair     = 1;
 input int      MaxTotalPositions = 7;
 
+//--- 連敗制限
+input bool     UseLossLimit      = false;        // 1日あたり連敗制限を使用
+input int      MaxLossPerPairDay = 2;            // 1ペア1日あたりの最大負け回数
+
 //--- 許可口座
 input string   AllowedAccounts   = "";
 
@@ -46,6 +50,8 @@ string pairs[];
 int    pairCount;
 int    handleRSI[];
 bool   pairEnabled[];
+int    dailyLossCount[];  // ペアごとの当日負け回数
+int    lastLossDay[];     // 最後にリセットした日
 
 //+------------------------------------------------------------------+
 double GetMinLot() { return MicroMode ? 0.1 : 0.01; }
@@ -60,11 +66,15 @@ int OnInit()
 
    ArrayResize(handleRSI, pairCount);
    ArrayResize(pairEnabled, pairCount);
+   ArrayResize(dailyLossCount, pairCount);
+   ArrayResize(lastLossDay, pairCount);
 
    int enabledCount = 0;
    for(int i = 0; i < pairCount; i++) {
       StringTrimRight(pairs[i]);
       StringTrimLeft(pairs[i]);
+      dailyLossCount[i] = 0;
+      lastLossDay[i] = 0;
       if(!SymbolSelect(pairs[i], true)) { pairEnabled[i] = false; continue; }
 
       handleRSI[i] = iRSI(pairs[i], RSI_TF, RSIPeriod, RSIPrice);
@@ -102,6 +112,7 @@ void OnTick()
       if(!IsSpreadOK(sym)) continue;
       if(CountPositions(sym, magic) >= MaxPosPerPair) continue;
       if(MaxTotalPositions > 0 && CountAllPositions() >= MaxTotalPositions) continue;
+      if(UseLossLimit && IsDailyLossLimitHit(i)) continue;
 
       CheckEntry(sym, magic, i);
    }
@@ -256,5 +267,49 @@ ENUM_ORDER_TYPE_FILLING GetFillingMode(string sym)
    if((fillMode & SYMBOL_FILLING_IOC) == SYMBOL_FILLING_IOC) return ORDER_FILLING_IOC;
    if(fillMode == 0) return ORDER_FILLING_FOK;
    return ORDER_FILLING_RETURN;
+}
+
+//+------------------------------------------------------------------+
+// 1日あたりの負け回数を確認・更新
+//+------------------------------------------------------------------+
+bool IsDailyLossLimitHit(int idx)
+{
+   MqlDateTime dt;
+   TimeToStruct(TimeCurrent(), dt);
+   int today = dt.day_of_year;
+
+   // 日付が変わったらリセット
+   if(lastLossDay[idx] != today) {
+      dailyLossCount[idx] = 0;
+      lastLossDay[idx] = today;
+      // 当日の負け回数を履歴から数える
+      CountTodayLosses(idx, today);
+   }
+
+   return (dailyLossCount[idx] >= MaxLossPerPairDay);
+}
+
+//+------------------------------------------------------------------+
+// 当日の負けトレードを履歴から数える
+//+------------------------------------------------------------------+
+void CountTodayLosses(int idx, int todayDOY)
+{
+   int magic = MagicBase + idx;
+   string sym = pairs[idx];
+   datetime dayStart = TimeCurrent() - (datetime)(TimeCurrent() % 86400);
+
+   HistorySelect(dayStart, TimeCurrent());
+   int total = HistoryDealsTotal();
+   int losses = 0;
+
+   for(int i = 0; i < total; i++) {
+      ulong ticket = HistoryDealGetTicket(i);
+      if(ticket == 0) continue;
+      if(HistoryDealGetInteger(ticket, DEAL_MAGIC) != magic) continue;
+      if(HistoryDealGetString(ticket, DEAL_SYMBOL) != sym) continue;
+      if(HistoryDealGetInteger(ticket, DEAL_ENTRY) != DEAL_ENTRY_OUT) continue;
+      if(HistoryDealGetDouble(ticket, DEAL_PROFIT) < 0) losses++;
+   }
+   dailyLossCount[idx] = losses;
 }
 //+------------------------------------------------------------------+

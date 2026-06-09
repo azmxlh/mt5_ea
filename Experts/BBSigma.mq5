@@ -113,9 +113,9 @@ input int      WinRateFilter_Pause_Hours = 168; // 停止期間(時間) 168=1週
 
 //--- 成績悪化時ロット縮小（停止ではなく最小ロットで継続）
 input bool     LotReduce_Enabled     = true;    // ロット縮小モード(有効/無効)
-input int      LotReduce_Trades      = 4;       // 直近何トレードで判定するか
-input double   LotReduce_Trigger_Pct = 50.0;    // 勝率がこの%未満で最小ロットに切替
-input double   LotReduce_Recover_Pct = 75.0;    // 勝率がこの%以上で通常ロットに復帰
+input int      LotReduce_Trades      = 10;       // 直近何トレードで判定するか
+input double   LotReduce_Trigger_Pct = 40.0;    // 勝率がこの%未満で最小ロットに切替
+input double   LotReduce_Recover_Pct = 60.0;    // 勝率がこの%以上で通常ロットに復帰
 
 //--- 通貨エクスポージャー制限
 input bool     Exposure_Enabled  = true;        // 通貨エクスポージャー制限（同一通貨への偏り防止）
@@ -503,6 +503,17 @@ void OnTick()
    double effectiveTP_Pct = TakeProfit_Equity_Pct;
    if(AdaptiveTP_Enabled) {
       effectiveTP_Pct = CalcAdaptiveTP();
+   }
+
+   // ロット縮小中はTP閾値をロット比率に応じて下げる
+   if(LotReduce_Enabled && g_lotReduceActive && effectiveTP_Pct > 0) {
+      double normalLot = CalcNormalLot();
+      double minLot = GetMinLot();
+      if(normalLot > 0) {
+         double lotRatio = minLot / normalLot;
+         effectiveTP_Pct = effectiveTP_Pct * lotRatio;
+         if(effectiveTP_Pct < 0.01) effectiveTP_Pct = 0.01;  // 最低0.01%
+      }
    }
 
    if(effectiveTP_Pct > 0 || StopLoss_Equity_Pct > 0) {
@@ -1228,6 +1239,30 @@ double CalcInitialLot(string sym)
    lot = MathMin(lot, maxLot);
 
    return lot;
+}
+
+//+------------------------------------------------------------------+
+// 通常ロット計算（ロット縮小を無視）- AdaptiveTPの閾値調整用
+//+------------------------------------------------------------------+
+double CalcNormalLot()
+{
+   if(!CompoundMode) return FixedLot;
+
+   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+   double lot = (balance / BalancePerLot) * BaseLots;
+
+   if(Decay_Enabled && Decay_Step > 0) {
+      double baseBalance = (initialBalance > 0) ? initialBalance : balance;
+      double growth = balance - baseBalance;
+      if(growth > 0) {
+         int steps = (int)MathFloor(growth / Decay_Step);
+         double multiplier = 1.0 - (steps * Decay_Reduce);
+         multiplier = MathMax(multiplier, Decay_MinMulti);
+         lot = lot * multiplier;
+      }
+   }
+
+   return MathMax(lot, GetMinLot());
 }
 
 //+------------------------------------------------------------------+

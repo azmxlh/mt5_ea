@@ -1,9 +1,9 @@
 //+------------------------------------------------------------------+
-//| RangeReversion.mq5 - レンジ逆張りEA V5.1                       |
-//| g.xlsxの構造ベース + レンジ品質フィルター追加                    |
+//| RangeReversion.mq5 - レンジ逆張りEA V6                         |
+//| スイングハイ/ロー基準のレンジ検出 + ATR縮小確認                 |
 //+------------------------------------------------------------------+
 #property copyright "RangeReversion EA"
-#property version   "5.10"
+#property version   "6.00"
 #property strict
 
 //--- 通貨ペア設定
@@ -17,42 +17,33 @@ input double   BaseLots          = 0.1;
 input double   FixedLot          = 0.1;
 input bool     MicroMode         = false;
 
-//--- BB設定
+//--- レンジ検出設定（H4スイングベース）
+input ENUM_TIMEFRAMES Range_TF   = PERIOD_H4;   // レンジ検出用時間足
+input int      Swing_Lookback    = 30;          // スイングハイ/ロー検出範囲(H4バー)
+input int      Swing_Bars        = 3;           // スイング確定に必要な両側バー数
+input int      NoBreak_Bars      = 10;          // レンジ上下端が破られていない期間(H4)
+input double   Range_MaxPips     = 150.0;       // レンジ幅上限(pips)
+input double   Range_MinPips     = 30.0;        // レンジ幅下限(pips)
+
+//--- ATR縮小確認
+input int      ATR_Period        = 14;
+input double   ATR_Shrink_Ratio  = 0.8;         // 直近ATR / 過去ATR がこの値以下
+
+//--- エントリー設定（H1）
+input ENUM_TIMEFRAMES Entry_TF   = PERIOD_H1;   // エントリー判定時間足
 input int      BB_Period         = 20;
 input double   BB_Deviation      = 2.0;
-input ENUM_TIMEFRAMES BB_TF      = PERIOD_H1;
-
-//--- レンジ検出設定（g.xlsxベース + 改善）
-input int      Range_Lookback    = 48;
-input double   Range_MaxWidth_Pct = 2.0;        // ATR倍率上限
-input double   Range_MinWidth_Pct = 0.3;        // ATR倍率下限
-input int      Range_TouchCount  = 2;           // タッチ回数
-input double   Range_TouchZone_Pct = 20.0;      // タッチゾーン%
-input double   Range_BodyInside_Pct = 85.0;     // 実体レンジ内率（高値-安値ではなく実体で判定）
+input double   Confirm_MinReturn = 0.3;         // 確認足戻り率
 
 //--- SL/TP設定
-input double   SL_Extra_Pips     = 5.0;         // SLはレンジ外+Xpips
-input double   TP_Position       = 0.5;         // TPはレンジ幅の何%戻り
-input double   TP_Min_Pips       = 8.0;         // TP最低pips
-
-//--- エントリー確認
-input double   Confirm_MinReturn = 0.3;         // 確認足の最低戻り率
-
-//--- ADXフィルター
-input bool     ADXFilter_Enabled = true;
-input int      ADXFilter_Period  = 14;
-input double   ADXFilter_Max     = 25.0;
-input ENUM_TIMEFRAMES ADXFilter_TF = PERIOD_H4;
-
-//--- ATR設定（レンジ幅正規化用）
-input int      ATR_Period        = 14;
-input ENUM_TIMEFRAMES ATR_TF     = PERIOD_H1;   // BB_TFと同じ時間足
+input double   SL_Extra_Pips     = 5.0;         // レンジ外+Xpips
+input double   TP_Ratio          = 0.5;         // レンジ幅に対するTP比率（0.5=中央）
 
 //--- リスク管理
 input double   MaxSpread_Pips    = 3.0;
-input int      TradingStartHour  = 0;           // 0-0で24時間
+input int      TradingStartHour  = 0;
 input int      TradingEndHour    = 0;
-input int      ReentryCooldown   = 12;
+input int      ReentryCooldown   = 6;           // H1バー数
 input int      MaxTotalPositions = 10;
 input int      MaxPosPerPair     = 1;
 
@@ -63,7 +54,6 @@ input string   AllowedAccounts   = "";
 string pairs[];
 int    pairCount;
 int    handleBB[];
-int    handleADX[];
 int    handleATR[];
 bool   pairEnabled[];
 datetime lastCloseTime[];
@@ -81,7 +71,6 @@ int OnInit()
    if(pairCount <= 0) return INIT_FAILED;
 
    ArrayResize(handleBB, pairCount);
-   ArrayResize(handleADX, pairCount);
    ArrayResize(handleATR, pairCount);
    ArrayResize(pairEnabled, pairCount);
    ArrayResize(lastCloseTime, pairCount);
@@ -95,12 +84,10 @@ int OnInit()
       StringTrimLeft(pairs[i]);
       if(!SymbolSelect(pairs[i], true)) { pairEnabled[i] = false; continue; }
 
-      handleBB[i] = iBands(pairs[i], BB_TF, BB_Period, 0, BB_Deviation, PRICE_CLOSE);
-      handleADX[i] = iADX(pairs[i], ADXFilter_TF, ADXFilter_Period);
-      handleATR[i] = iATR(pairs[i], ATR_TF, ATR_Period);
+      handleBB[i] = iBands(pairs[i], Entry_TF, BB_Period, 0, BB_Deviation, PRICE_CLOSE);
+      handleATR[i] = iATR(pairs[i], Range_TF, ATR_Period);
 
-      if(handleBB[i] == INVALID_HANDLE || handleADX[i] == INVALID_HANDLE ||
-         handleATR[i] == INVALID_HANDLE) {
+      if(handleBB[i] == INVALID_HANDLE || handleATR[i] == INVALID_HANDLE) {
          pairEnabled[i] = false; continue;
       }
 
@@ -109,9 +96,8 @@ int OnInit()
    }
 
    if(enabledCount == 0) return INIT_FAILED;
-   PrintFormat("[RangeRev V5.1] 初期化: %d/%d pairs, BB=%s, ADX=%s",
-              enabledCount, pairCount,
-              EnumToString(BB_TF), EnumToString(ADXFilter_TF));
+   PrintFormat("[RangeRev V6] 初期化: %d/%d pairs, Range=%s, Entry=%s",
+              enabledCount, pairCount, EnumToString(Range_TF), EnumToString(Entry_TF));
    return INIT_SUCCEEDED;
 }
 
@@ -120,7 +106,6 @@ void OnDeinit(const int reason)
 {
    for(int i = 0; i < pairCount; i++) {
       if(handleBB[i] != INVALID_HANDLE) IndicatorRelease(handleBB[i]);
-      if(handleADX[i] != INVALID_HANDLE) IndicatorRelease(handleADX[i]);
       if(handleATR[i] != INVALID_HANDLE) IndicatorRelease(handleATR[i]);
    }
 }
@@ -140,7 +125,7 @@ void OnTick()
       if(MaxTotalPositions > 0 && CountAllPositions() >= MaxTotalPositions) continue;
 
       if(ReentryCooldown > 0 && lastCloseTime[i] > 0) {
-         int barsSinceClose = (int)((TimeCurrent() - lastCloseTime[i]) / PeriodSeconds(BB_TF));
+         int barsSinceClose = (int)((TimeCurrent() - lastCloseTime[i]) / PeriodSeconds(Entry_TF));
          if(barsSinceClose < ReentryCooldown) continue;
       }
 
@@ -151,7 +136,7 @@ void OnTick()
 //+------------------------------------------------------------------+
 bool IsNewBar(string sym, int idx)
 {
-   datetime barTime = iTime(sym, BB_TF, 0);
+   datetime barTime = iTime(sym, Entry_TF, 0);
    if(barTime == 0) return false;
    if(barTime != lastBarTime[idx]) { lastBarTime[idx] = barTime; return true; }
    return false;
@@ -171,111 +156,142 @@ bool IsTradingTime()
 }
 
 //+------------------------------------------------------------------+
+// スイングハイを検出（左右Swing_Bars本より高い高値）
+//+------------------------------------------------------------------+
+bool FindSwingHigh(string sym, int startBar, int &foundBar, double &foundPrice)
+{
+   for(int i = startBar + Swing_Bars; i <= Swing_Lookback - Swing_Bars; i++) {
+      double h = iHigh(sym, Range_TF, i);
+      bool isSwing = true;
+      for(int j = 1; j <= Swing_Bars; j++) {
+         if(iHigh(sym, Range_TF, i - j) >= h || iHigh(sym, Range_TF, i + j) >= h) {
+            isSwing = false;
+            break;
+         }
+      }
+      if(isSwing) {
+         foundBar = i;
+         foundPrice = h;
+         return true;
+      }
+   }
+   return false;
+}
+
+//+------------------------------------------------------------------+
+// スイングローを検出（左右Swing_Bars本より低い安値）
+//+------------------------------------------------------------------+
+bool FindSwingLow(string sym, int startBar, int &foundBar, double &foundPrice)
+{
+   for(int i = startBar + Swing_Bars; i <= Swing_Lookback - Swing_Bars; i++) {
+      double l = iLow(sym, Range_TF, i);
+      bool isSwing = true;
+      for(int j = 1; j <= Swing_Bars; j++) {
+         if(iLow(sym, Range_TF, i - j) <= l || iLow(sym, Range_TF, i + j) <= l) {
+            isSwing = false;
+            break;
+         }
+      }
+      if(isSwing) {
+         foundBar = i;
+         foundPrice = l;
+         return true;
+      }
+   }
+   return false;
+}
+
+//+------------------------------------------------------------------+
 void CheckEntry(string sym, int magic, int idx)
 {
    double point = SymbolInfoDouble(sym, SYMBOL_POINT);
    int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
    double pipValue = point * 10;
 
-   // === ATR取得 ===
-   double atr[];
-   ArraySetAsSeries(atr, true);
-   if(CopyBuffer(handleATR[idx], 0, 0, 3, atr) < 3) return;
-   if(atr[1] <= 0) return;
+   // === スイングハイ/ロー検出 ===
+   int swHighBar = 0, swLowBar = 0;
+   double rangeHigh = 0, rangeLow = 0;
 
-   // === 水平レンジ検出 ===
-   double rangeHigh = 0, rangeLow = 999999;
-   for(int k = 1; k <= Range_Lookback; k++) {
-      double h = iHigh(sym, BB_TF, k);
-      double l = iLow(sym, BB_TF, k);
-      if(h > rangeHigh) rangeHigh = h;
-      if(l < rangeLow) rangeLow = l;
-   }
+   if(!FindSwingHigh(sym, 0, swHighBar, rangeHigh)) return;
+   if(!FindSwingLow(sym, 0, swLowBar, rangeLow)) return;
 
    double rangeWidth = rangeHigh - rangeLow;
-   if(rangeWidth <= 0) return;
-
-   // レンジ幅をpipsでチェック（ATR正規化は無効化）
    double rangeWidthPips = rangeWidth / pipValue;
-   if(rangeWidthPips > 200.0 || rangeWidthPips < 20.0) return;
+   if(rangeWidthPips > Range_MaxPips || rangeWidthPips < Range_MinPips) return;
 
-   // レンジ内収率は無効化（フィルタリングが厳しすぎるため）
-
-   // タッチゾーン
-   double zoneSize = rangeWidth * Range_TouchZone_Pct / 100.0;
-   double upperZone = rangeHigh - zoneSize;
-   double lowerZone = rangeLow + zoneSize;
-
-   // タッチ回数カウント
-   int upperTouches = 0, lowerTouches = 0;
-   for(int k = 1; k <= Range_Lookback; k++) {
-      if(iHigh(sym, BB_TF, k) >= upperZone) upperTouches++;
-      if(iLow(sym, BB_TF, k) <= lowerZone) lowerTouches++;
-   }
-   if(upperTouches < Range_TouchCount || lowerTouches < Range_TouchCount) return;
-
-   // === ADXフィルター ===
-   if(ADXFilter_Enabled) {
-      double adx[];
-      ArraySetAsSeries(adx, true);
-      if(CopyBuffer(handleADX[idx], 0, 0, 2, adx) < 2) return;
-      if(adx[0] > ADXFilter_Max) return;
+   // === レンジ未ブレイク確認 ===
+   // 直近NoBreak_Bars本のH4バーがレンジを超えていないこと
+   for(int k = 1; k <= NoBreak_Bars; k++) {
+      if(iHigh(sym, Range_TF, k) > rangeHigh + 2 * pipValue) return;  // 2pips余裕
+      if(iLow(sym, Range_TF, k) < rangeLow - 2 * pipValue) return;
    }
 
-   // === BB確認 ===
+   // === ATR縮小確認 ===
+   double atr[];
+   ArraySetAsSeries(atr, true);
+   if(CopyBuffer(handleATR[idx], 0, 0, ATR_Period * 2, atr) < ATR_Period * 2) return;
+
+   double recentATR = 0, pastATR = 0;
+   for(int k = 0; k < ATR_Period; k++) recentATR += atr[k];
+   for(int k = ATR_Period; k < ATR_Period * 2; k++) pastATR += atr[k];
+   recentATR /= ATR_Period;
+   pastATR /= ATR_Period;
+
+   if(pastATR <= 0) return;
+   if(recentATR / pastATR > ATR_Shrink_Ratio) return;  // ATRが縮小していない
+
+   // === BB確認（Entry_TF = H1）===
    double bb_upper[], bb_lower[];
    ArraySetAsSeries(bb_upper, true);
    ArraySetAsSeries(bb_lower, true);
    if(CopyBuffer(handleBB[idx], 1, 0, 4, bb_upper) < 4) return;
    if(CopyBuffer(handleBB[idx], 2, 0, 4, bb_lower) < 4) return;
 
-   // === 価格データ ===
-   double high2  = iHigh(sym, BB_TF, 2);
-   double low2   = iLow(sym, BB_TF, 2);
-   double close2 = iClose(sym, BB_TF, 2);
-   double close1 = iClose(sym, BB_TF, 1);
-   double open1  = iOpen(sym, BB_TF, 1);
+   // === H1価格データ ===
+   double high2  = iHigh(sym, Entry_TF, 2);
+   double low2   = iLow(sym, Entry_TF, 2);
+   double close2 = iClose(sym, Entry_TF, 2);
+   double close1 = iClose(sym, Entry_TF, 1);
+   double open1  = iOpen(sym, Entry_TF, 1);
 
-   // === Buy: 下限ゾーン + BB下限タッチ + 反転確認 ===
-   if(low2 <= lowerZone && low2 <= bb_lower[2] && close2 > rangeLow) {
+   // レンジ下端ゾーン（下20%）
+   double lowerZone = rangeLow + rangeWidth * 0.2;
+   double upperZone = rangeHigh - rangeWidth * 0.2;
+
+   // === Buy: 下端ゾーン + BB下限 + 反転足 ===
+   if(low2 <= lowerZone && low2 <= bb_lower[2]) {
       double swingRange = high2 - low2;
       if(swingRange <= 0) return;
-      double returnRatio = (close1 - low2) / swingRange;
-      if(returnRatio < Confirm_MinReturn) return;
-      if(close1 <= open1) return;  // Bar1が陽線
+      if((close1 - low2) / swingRange < Confirm_MinReturn) return;
+      if(close1 <= open1) return;
 
       double entryPrice = SymbolInfoDouble(sym, SYMBOL_ASK);
       double slPrice = NormalizeDouble(rangeLow - SL_Extra_Pips * pipValue, digits);
-      double tpTarget = rangeWidth * TP_Position;
-      if(tpTarget / pipValue < TP_Min_Pips) tpTarget = TP_Min_Pips * pipValue;
-      double tpPrice = NormalizeDouble(entryPrice + tpTarget, digits);
+      double tpPrice = NormalizeDouble(entryPrice + rangeWidth * TP_Ratio, digits);
 
       double lot = CalcLot(sym);
       if(OpenOrder(sym, ORDER_TYPE_BUY, lot, magic, slPrice, tpPrice)) {
-         PrintFormat("[RangeRev][%s] BUY @ %.5f, SL=%.5f, TP=%.5f",
-                    sym, entryPrice, slPrice, tpPrice);
+         PrintFormat("[RangeRev V6][%s] BUY @ %.5f, SL=%.5f, TP=%.5f, Range=%.0fp",
+                    sym, entryPrice, slPrice, tpPrice, rangeWidthPips);
       }
       return;
    }
 
-   // === Sell: 上限ゾーン + BB上限タッチ + 反転確認 ===
-   if(high2 >= upperZone && high2 >= bb_upper[2] && close2 < rangeHigh) {
+   // === Sell: 上端ゾーン + BB上限 + 反転足 ===
+   if(high2 >= upperZone && high2 >= bb_upper[2]) {
       double swingRange = high2 - low2;
       if(swingRange <= 0) return;
-      double returnRatio = (high2 - close1) / swingRange;
-      if(returnRatio < Confirm_MinReturn) return;
-      if(close1 >= open1) return;  // Bar1が陰線
+      if((high2 - close1) / swingRange < Confirm_MinReturn) return;
+      if(close1 >= open1) return;
 
       double entryPrice = SymbolInfoDouble(sym, SYMBOL_BID);
       double slPrice = NormalizeDouble(rangeHigh + SL_Extra_Pips * pipValue, digits);
-      double tpTarget = rangeWidth * TP_Position;
-      if(tpTarget / pipValue < TP_Min_Pips) tpTarget = TP_Min_Pips * pipValue;
-      double tpPrice = NormalizeDouble(entryPrice - tpTarget, digits);
+      double tpPrice = NormalizeDouble(entryPrice - rangeWidth * TP_Ratio, digits);
 
       double lot = CalcLot(sym);
       if(OpenOrder(sym, ORDER_TYPE_SELL, lot, magic, slPrice, tpPrice)) {
-         PrintFormat("[RangeRev][%s] SELL @ %.5f, SL=%.5f, TP=%.5f",
-                    sym, entryPrice, slPrice, tpPrice);
+         PrintFormat("[RangeRev V6][%s] SELL @ %.5f, SL=%.5f, TP=%.5f, Range=%.0fp",
+                    sym, entryPrice, slPrice, tpPrice, rangeWidthPips);
       }
       return;
    }
